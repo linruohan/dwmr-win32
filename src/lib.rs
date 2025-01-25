@@ -1,5 +1,4 @@
 use windows::{
-    core::*,
     Foundation::Numerics::*,
     Win32::{
         Foundation::*,
@@ -14,6 +13,7 @@ use windows::{
         UI::HiDpi::*,
         UI::{Accessibility::*, Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
     },
+    core::*,
 };
 
 use core::fmt;
@@ -106,106 +106,114 @@ impl Drop for Bar {
 
 impl Bar {
     pub unsafe fn setup_bar(&mut self, display_rect: &Rect) -> Result<()> {
-        let focus_hwnd = GetForegroundWindow();
+        unsafe {
+            let focus_hwnd = GetForegroundWindow();
 
-        let hwnd_result = CreateWindowExW(
-            WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-            W_BAR_NAME.clone(),
-            W_BAR_NAME.clone(),
-            WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-            display_rect.x,
-            display_rect.y,
-            display_rect.width,
-            BAR_HEIGHT as i32,
-            None,
-            None,
-            None,
-            Some(self as *const _ as _),
-        );
+            let hwnd_result = CreateWindowExW(
+                WS_EX_TOOLWINDOW | WS_EX_LAYERED,
+                W_BAR_NAME.clone(),
+                W_BAR_NAME.clone(),
+                WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
+                display_rect.x,
+                display_rect.y,
+                display_rect.width,
+                BAR_HEIGHT as i32,
+                None,
+                None,
+                None,
+                Some(self as *const _ as _),
+            );
 
-        if hwnd_result.0 == 0 {
-            GetLastError()?;
+            if hwnd_result.0 == 0 {
+                GetLastError()?;
+            }
+
+            SetLayeredWindowAttributes(
+                hwnd_result,
+                COLORREF(0),
+                (255 as f32 * BAR_TRANSPARENCY) as u8,
+                LWA_ALPHA,
+            )?;
+
+            self.hwnd = hwnd_result;
+            self.rect = Rect {
+                x: 0,
+                y: 0,
+                width: display_rect.width,
+                height: BAR_HEIGHT,
+            };
+            self.dpi = GetDpiForWindow(hwnd_result) as f32 / 96.0;
+
+            let factory =
+                D2D1CreateFactory::<ID2D1Factory>(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+            let render_target_property = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                pixelFormat: Common::D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: 0.0,
+                dpiY: 0.0,
+                usage: D2D1_RENDER_TARGET_USAGE_NONE,
+                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+            };
+
+            let hwnd_render_target_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
+                hwnd: hwnd_result,
+                pixelSize: Common::D2D_SIZE_U {
+                    width: 1920,
+                    height: BAR_HEIGHT as u32,
+                },
+                presentOptions: D2D1_PRESENT_OPTIONS_NONE,
+            };
+            let render_target = factory
+                .CreateHwndRenderTarget(&render_target_property, &hwnd_render_target_properties)?;
+
+            let brush_property = D2D1_BRUSH_PROPERTIES {
+                opacity: 1.0,
+                transform: Matrix3x2::identity(),
+            };
+
+            let background_brush = render_target
+                .CreateSolidColorBrush(&BAR_COLOR_BACKGROUND, Some(&brush_property as *const _))?;
+            let selected_box_brush = render_target.CreateSolidColorBrush(
+                &BAR_COLOR_SELECTED_BOX,
+                Some(&brush_property as *const _),
+            )?;
+            let selected_text_brush = render_target.CreateSolidColorBrush(
+                &BAR_COLOR_SELECTED_TEXT,
+                Some(&brush_property as *const _),
+            )?;
+            let unselected_text_brush = render_target.CreateSolidColorBrush(
+                &BAR_COLOR_UNSELECTED_TEXT,
+                Some(&brush_property as *const _),
+            )?;
+            self.render_target = Some(render_target);
+            self.unselected_text_brush = Some(unselected_text_brush.clone());
+            self.selected_text_brush = Some(selected_text_brush);
+            self.text_box_brush = Some(selected_box_brush);
+            self.background_brush = Some(background_brush);
+
+            let write_factory =
+                DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_ISOLATED)?;
+            let text_format = write_factory.CreateTextFormat(
+                w!("PingFang SC"),
+                None,
+                DWRITE_FONT_WEIGHT_REGULAR,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                20.0,
+                w!("ko-kr"),
+            )?;
+
+            self.write_factory = Some(write_factory);
+            self.text_format = Some(text_format);
+
+            ShowWindow(hwnd_result, SW_SHOW);
+            UpdateWindow(hwnd_result);
+            SetForegroundWindow(focus_hwnd);
+            Ok(())
         }
-
-        SetLayeredWindowAttributes(
-            hwnd_result,
-            COLORREF(0),
-            (255 as f32 * BAR_TRANSPARENCY) as u8,
-            LWA_ALPHA,
-        )?;
-
-        self.hwnd = hwnd_result;
-        self.rect = Rect {
-            x: 0,
-            y: 0,
-            width: display_rect.width,
-            height: BAR_HEIGHT,
-        };
-        self.dpi = GetDpiForWindow(hwnd_result) as f32 / 96.0;
-
-        let factory = D2D1CreateFactory::<ID2D1Factory>(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
-        let render_target_property = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            pixelFormat: Common::D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 0.0,
-            dpiY: 0.0,
-            usage: D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-
-        let hwnd_render_target_properties = D2D1_HWND_RENDER_TARGET_PROPERTIES {
-            hwnd: hwnd_result,
-            pixelSize: Common::D2D_SIZE_U {
-                width: 1920,
-                height: BAR_HEIGHT as u32,
-            },
-            presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-        };
-        let render_target = factory
-            .CreateHwndRenderTarget(&render_target_property, &hwnd_render_target_properties)?;
-
-        let brush_property = D2D1_BRUSH_PROPERTIES {
-            opacity: 1.0,
-            transform: Matrix3x2::identity(),
-        };
-
-        let background_brush = render_target
-            .CreateSolidColorBrush(&BAR_COLOR_BACKGROUND, Some(&brush_property as *const _))?;
-        let selected_box_brush = render_target
-            .CreateSolidColorBrush(&BAR_COLOR_SELECTED_BOX, Some(&brush_property as *const _))?;
-        let selected_text_brush = render_target
-            .CreateSolidColorBrush(&BAR_COLOR_SELECTED_TEXT, Some(&brush_property as *const _))?;
-        let unselected_text_brush = render_target.CreateSolidColorBrush(
-            &BAR_COLOR_UNSELECTED_TEXT,
-            Some(&brush_property as *const _),
-        )?;
-        self.render_target = Some(render_target);
-        self.unselected_text_brush = Some(unselected_text_brush.clone());
-        self.selected_text_brush = Some(selected_text_brush);
-        self.text_box_brush = Some(selected_box_brush);
-        self.background_brush = Some(background_brush);
-
-        let write_factory = DWriteCreateFactory::<IDWriteFactory>(DWRITE_FACTORY_TYPE_ISOLATED)?;
-        let text_format = write_factory.CreateTextFormat(
-            w!("Arial"),
-            None,
-            DWRITE_FONT_WEIGHT_REGULAR,
-            DWRITE_FONT_STYLE_NORMAL,
-            DWRITE_FONT_STRETCH_NORMAL,
-            20.0,
-            w!("ko-kr"),
-        )?;
-
-        self.write_factory = Some(write_factory);
-        self.text_format = Some(text_format);
-
-        ShowWindow(hwnd_result, SW_SHOW);
-        UpdateWindow(hwnd_result);
-        SetForegroundWindow(focus_hwnd);
-        Ok(())
     }
 
     unsafe extern "system" fn bar_wnd_proc(
@@ -214,113 +222,117 @@ impl Bar {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        match msg {
-            WM_CREATE => {
-                let create_struct = lparam.0 as *const CREATESTRUCTW;
-                let this = (*create_struct).lpCreateParams as *mut Bar;
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, this as isize);
-                LRESULT::default()
+        unsafe {
+            match msg {
+                WM_CREATE => {
+                    let create_struct = lparam.0 as *const CREATESTRUCTW;
+                    let this = (*create_struct).lpCreateParams as *mut Bar;
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, this as isize);
+                    LRESULT::default()
+                }
+                WM_DESTROY => LRESULT::default(),
+                WM_DISPLAYCHANGE => {
+                    println!("Display change detected");
+                    let this = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Bar;
+                    if this.is_null() {
+                        return LRESULT::default();
+                    }
+
+                    if (*this).hwnd != hwnd {
+                        return LRESULT::default();
+                    }
+
+                    SendMessageW(
+                        (*this).master_hwnd,
+                        WM_UPDATE_DISPLAY,
+                        WPARAM::default(),
+                        LPARAM::default(),
+                    );
+                    LRESULT::default()
+                }
+                WM_PAINT => {
+                    let this = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Bar;
+                    if this.is_null() {
+                        return LRESULT::default();
+                    }
+
+                    if (*this).hwnd != hwnd {
+                        return LRESULT::default();
+                    }
+
+                    let mut ps = PAINTSTRUCT::default();
+                    let _hdc = BeginPaint(hwnd, &mut ps);
+                    let _ = (*this).draw();
+                    EndPaint(hwnd, &ps);
+                    LRESULT::default()
+                }
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
             }
-            WM_DESTROY => LRESULT::default(),
-            WM_DISPLAYCHANGE => {
-                println!("Display change detected");
-                let this = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Bar;
-                if this.is_null() {
-                    return LRESULT::default();
-                }
-
-                if (*this).hwnd != hwnd {
-                    return LRESULT::default();
-                }
-
-                SendMessageW(
-                    (*this).master_hwnd,
-                    WM_UPDATE_DISPLAY,
-                    WPARAM::default(),
-                    LPARAM::default(),
-                );
-                LRESULT::default()
-            }
-            WM_PAINT => {
-                let this = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Bar;
-                if this.is_null() {
-                    return LRESULT::default();
-                }
-
-                if (*this).hwnd != hwnd {
-                    return LRESULT::default();
-                }
-
-                let mut ps = PAINTSTRUCT::default();
-                let _hdc = BeginPaint(hwnd, &mut ps);
-                let _ = (*this).draw();
-                EndPaint(hwnd, &ps);
-                LRESULT::default()
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 
     unsafe fn draw(&self) -> Result<()> {
-        if self.hwnd.0 == 0 {
-            return Ok(());
+        unsafe {
+            if self.hwnd.0 == 0 {
+                return Ok(());
+            }
+
+            if self.render_target.is_none()
+                || self.text_box_brush.is_none()
+                || self.text_format.is_none()
+            {
+                return Ok(());
+            }
+
+            let render_target_ref = self.render_target.as_ref().unwrap();
+            render_target_ref.BeginDraw();
+
+            render_target_ref.Clear(Some(&BAR_COLOR_BACKGROUND));
+
+            let mut x_pos = 0.0;
+            for i in 0..TAGS.len() {
+                let window_exist = has_flag!(self.window_tags, TAGMASK & (1 << i));
+                let is_selected_tag = has_flag!(self.selected_tags, 1 << i);
+                let window_mark = match (window_exist, is_selected_tag) {
+                    (false, _) => None,
+                    (true, true) => Some(BAR_SELECTED_WINDOW_MARK.as_wide()),
+                    (true, false) => Some(BAR_UNSELECTED_WINDOW_MARK.as_wide()),
+                };
+
+                let marked_tag = HSTRING::from(TAGS[i].to_string().unwrap() + CURRENT_WINDOW_MARK);
+                let display_tag = if has_flag!(self.current_window_tags, 1 << i) {
+                    marked_tag.as_wide()
+                } else {
+                    TAGS[i].as_wide()
+                };
+
+                x_pos = match (
+                    has_flag!(self.selected_tags, 1 << i),
+                    self.is_selected_monitor,
+                ) {
+                    (true, true) => self.draw_selected_monitor_selected_text_box(
+                        display_tag,
+                        window_mark,
+                        15.0,
+                        x_pos,
+                    )?,
+                    (true, false) => self.draw_unselected_monitor_selected_text_box(
+                        display_tag,
+                        window_mark,
+                        15.0,
+                        x_pos,
+                    )?,
+                    (false, _) => {
+                        self.draw_unselected_text_box(display_tag, window_mark, 15.0, x_pos)?
+                    }
+                };
+                x_pos += 5.0;
+            }
+
+            render_target_ref.EndDraw(None, None)?;
+
+            Ok(())
         }
-
-        if self.render_target.is_none()
-            || self.text_box_brush.is_none()
-            || self.text_format.is_none()
-        {
-            return Ok(());
-        }
-
-        let render_target_ref = self.render_target.as_ref().unwrap();
-        render_target_ref.BeginDraw();
-
-        render_target_ref.Clear(Some(&BAR_COLOR_BACKGROUND));
-
-        let mut x_pos = 0.0;
-        for i in 0..TAGS.len() {
-            let window_exist = has_flag!(self.window_tags, TAGMASK & (1 << i));
-            let is_selected_tag = has_flag!(self.selected_tags, 1 << i);
-            let window_mark = match (window_exist, is_selected_tag) {
-                (false, _) => None,
-                (true, true) => Some(BAR_SELECTED_WINDOW_MARK.as_wide()),
-                (true, false) => Some(BAR_UNSELECTED_WINDOW_MARK.as_wide()),
-            };
-
-            let marked_tag = HSTRING::from(TAGS[i].to_string().unwrap() + CURRENT_WINDOW_MARK);
-            let display_tag = if has_flag!(self.current_window_tags, 1 << i) {
-                marked_tag.as_wide()
-            } else {
-                TAGS[i].as_wide()
-            };
-
-            x_pos = match (
-                has_flag!(self.selected_tags, 1 << i),
-                self.is_selected_monitor,
-            ) {
-                (true, true) => self.draw_selected_monitor_selected_text_box(
-                    display_tag,
-                    window_mark,
-                    15.0,
-                    x_pos,
-                )?,
-                (true, false) => self.draw_unselected_monitor_selected_text_box(
-                    display_tag,
-                    window_mark,
-                    15.0,
-                    x_pos,
-                )?,
-                (false, _) => {
-                    self.draw_unselected_text_box(display_tag, window_mark, 15.0, x_pos)?
-                }
-            };
-            x_pos += 5.0;
-        }
-
-        render_target_ref.EndDraw(None, None)?;
-
-        Ok(())
     }
 
     unsafe fn draw_unselected_text_box(
@@ -330,23 +342,25 @@ impl Bar {
         font_size: f32,
         origin_x: f32,
     ) -> Result<f32> {
-        let next_width = implement_draw_text_box(
-            text,
-            super_text,
-            font_size,
-            self.rect.width as f32,
-            self.rect.height as f32,
-            origin_x,
-            self.rect.y as f32,
-            BAR_PADDING,
-            self.dpi,
-            self.text_format.as_ref().unwrap(),
-            self.write_factory.as_ref().unwrap(),
-            self.render_target.as_ref().unwrap(),
-            self.background_brush.as_ref().unwrap(),
-            self.unselected_text_brush.as_ref().unwrap(),
-        )?;
-        Ok(next_width)
+        unsafe {
+            let next_width = implement_draw_text_box(
+                text,
+                super_text,
+                font_size,
+                self.rect.width as f32,
+                self.rect.height as f32,
+                origin_x,
+                self.rect.y as f32,
+                BAR_PADDING,
+                self.dpi,
+                self.text_format.as_ref().unwrap(),
+                self.write_factory.as_ref().unwrap(),
+                self.render_target.as_ref().unwrap(),
+                self.background_brush.as_ref().unwrap(),
+                self.unselected_text_brush.as_ref().unwrap(),
+            )?;
+            Ok(next_width)
+        }
     }
 
     unsafe fn draw_selected_monitor_selected_text_box(
@@ -356,23 +370,25 @@ impl Bar {
         font_size: f32,
         origin_x: f32,
     ) -> Result<f32> {
-        let next_width = implement_draw_text_box(
-            text,
-            super_text,
-            font_size,
-            self.rect.width as f32,
-            self.rect.height as f32,
-            origin_x,
-            self.rect.y as f32,
-            BAR_PADDING,
-            self.dpi,
-            self.text_format.as_ref().unwrap(),
-            self.write_factory.as_ref().unwrap(),
-            self.render_target.as_ref().unwrap(),
-            self.text_box_brush.as_ref().unwrap(),
-            self.selected_text_brush.as_ref().unwrap(),
-        )?;
-        Ok(next_width)
+        unsafe {
+            let next_width = implement_draw_text_box(
+                text,
+                super_text,
+                font_size,
+                self.rect.width as f32,
+                self.rect.height as f32,
+                origin_x,
+                self.rect.y as f32,
+                BAR_PADDING,
+                self.dpi,
+                self.text_format.as_ref().unwrap(),
+                self.write_factory.as_ref().unwrap(),
+                self.render_target.as_ref().unwrap(),
+                self.text_box_brush.as_ref().unwrap(),
+                self.selected_text_brush.as_ref().unwrap(),
+            )?;
+            Ok(next_width)
+        }
     }
 
     unsafe fn draw_unselected_monitor_selected_text_box(
@@ -382,23 +398,25 @@ impl Bar {
         font_size: f32,
         origin_x: f32,
     ) -> Result<f32> {
-        let next_width = implement_draw_text_box(
-            text,
-            super_text,
-            font_size,
-            self.rect.width as f32,
-            self.rect.height as f32,
-            origin_x,
-            self.rect.y as f32,
-            BAR_PADDING,
-            self.dpi,
-            self.text_format.as_ref().unwrap(),
-            self.write_factory.as_ref().unwrap(),
-            self.render_target.as_ref().unwrap(),
-            self.unselected_text_brush.as_ref().unwrap(),
-            self.selected_text_brush.as_ref().unwrap(),
-        )?;
-        Ok(next_width)
+        unsafe {
+            let next_width = implement_draw_text_box(
+                text,
+                super_text,
+                font_size,
+                self.rect.width as f32,
+                self.rect.height as f32,
+                origin_x,
+                self.rect.y as f32,
+                BAR_PADDING,
+                self.dpi,
+                self.text_format.as_ref().unwrap(),
+                self.write_factory.as_ref().unwrap(),
+                self.render_target.as_ref().unwrap(),
+                self.unselected_text_brush.as_ref().unwrap(),
+                self.selected_text_brush.as_ref().unwrap(),
+            )?;
+            Ok(next_width)
+        }
     }
 }
 
@@ -421,41 +439,45 @@ struct Monitor {
 
 impl Monitor {
     unsafe fn arrangemon(&mut self) -> Result<()> {
-        self.show_hide()?;
-        let layout = self.layout.clone();
-        for _ in 0..5 {
-            match layout.unwrap().arrange_layout(self) {
-                Ok(()) => break,
-                Err(e) => {
-                    println!("Error: Arrange Fail - {e}");
-                    self.sanitize_clients();
+        unsafe {
+            self.show_hide()?;
+            let layout = self.layout.clone();
+            for _ in 0..5 {
+                match layout.unwrap().arrange_layout(self) {
+                    Ok(()) => break,
+                    Err(e) => {
+                        println!("Error: Arrange Fail - {e}");
+                        self.sanitize_clients();
+                    }
                 }
             }
+            Ok(())
         }
-        Ok(())
     }
 
     unsafe fn show_hide(&mut self) -> Result<()> {
-        let mut is_all_hide = true;
-        for client in self.clients.iter_mut() {
-            let is_visible = Self::is_visible(client, self.tagset[self.selected_tag_index]);
-            is_all_hide &= !is_visible;
-            let is_window_visible = IsWindowVisible(client.hwnd) == TRUE;
-            if is_visible && !is_window_visible {
-                client.is_hide = false;
-                ShowWindow(client.hwnd, SW_NORMAL);
+        unsafe {
+            let mut is_all_hide = true;
+            for client in self.clients.iter_mut() {
+                let is_visible = Self::is_visible(client, self.tagset[self.selected_tag_index]);
+                is_all_hide &= !is_visible;
+                let is_window_visible = IsWindowVisible(client.hwnd) == TRUE;
+                if is_visible && !is_window_visible {
+                    client.is_hide = false;
+                    ShowWindow(client.hwnd, SW_NORMAL);
+                }
+
+                if !is_visible && is_window_visible {
+                    client.is_hide = true;
+                    ShowWindow(client.hwnd, SW_HIDE);
+                }
             }
 
-            if !is_visible && is_window_visible {
-                client.is_hide = true;
-                ShowWindow(client.hwnd, SW_HIDE);
+            if is_all_hide {
+                self.selected_hwnd = HWND(0);
             }
+            Ok(())
         }
-
-        if is_all_hide {
-            self.selected_hwnd = HWND(0);
-        }
-        Ok(())
     }
 
     pub fn find_client_index(&self, hwnd: &HWND) -> Option<usize> {
@@ -493,7 +515,9 @@ impl Monitor {
     }
 
     pub unsafe fn sanitize_clients(&mut self) {
-        self.clients.retain(|client| IsWindow(client.hwnd) == TRUE);
+        unsafe {
+            self.clients.retain(|client| IsWindow(client.hwnd) == TRUE);
+        }
     }
 
     pub fn is_in_monitor(&self, x: i32, y: i32) -> bool {
@@ -506,18 +530,20 @@ impl Monitor {
     }
 
     pub unsafe fn update_bar(&mut self, is_selected_monitor: bool) {
-        let window_tags = self
-            .clients
-            .iter()
-            .fold(0u32, |acc, client| -> u32 { acc | client.tags });
-        self.bar.window_tags = window_tags;
-        self.bar.selected_tags = self.tagset[self.selected_tag_index];
-        self.bar.is_selected_monitor = is_selected_monitor;
-        self.bar.current_window_tags = 0;
-        if let Some(client_index) = self.get_selected_client_index() {
-            self.bar.current_window_tags = self.clients[client_index].tags;
+        unsafe {
+            let window_tags = self
+                .clients
+                .iter()
+                .fold(0u32, |acc, client| -> u32 { acc | client.tags });
+            self.bar.window_tags = window_tags;
+            self.bar.selected_tags = self.tagset[self.selected_tag_index];
+            self.bar.is_selected_monitor = is_selected_monitor;
+            self.bar.current_window_tags = 0;
+            if let Some(client_index) = self.get_selected_client_index() {
+                self.bar.current_window_tags = self.clients[client_index].tags;
+            }
+            let _result = RedrawWindow(self.bar.hwnd, None, None, RDW_INVALIDATE);
         }
-        let _result = RedrawWindow(self.bar.hwnd, None, None, RDW_INVALIDATE);
     }
 }
 
@@ -525,21 +551,8 @@ trait LayoutTrait {
     unsafe fn arrange_layout(&self, monitor: &mut Monitor) -> Result<()>;
     fn is_in_master_area(&self, monitor: &Monitor, x: i32, y: i32) -> bool;
     unsafe fn resize(&self, hwnd: &HWND, rect: &Rect) -> Result<()> {
-        ShowWindow(*hwnd, SW_NORMAL);
-        SetWindowPos(
-            *hwnd,
-            None,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            SET_WINDOW_POS_FLAGS(0),
-        )?;
-
-        let mut result_rect = RECT::default();
-        GetWindowRect(*hwnd, &mut result_rect)?;
-        let window_pos_result_rect = Rect::from_win_rect(&result_rect);
-        if window_pos_result_rect != *rect {
+        unsafe {
+            ShowWindow(*hwnd, SW_NORMAL);
             SetWindowPos(
                 *hwnd,
                 None,
@@ -549,8 +562,23 @@ trait LayoutTrait {
                 rect.height,
                 SET_WINDOW_POS_FLAGS(0),
             )?;
+
+            let mut result_rect = RECT::default();
+            GetWindowRect(*hwnd, &mut result_rect)?;
+            let window_pos_result_rect = Rect::from_win_rect(&result_rect);
+            if window_pos_result_rect != *rect {
+                SetWindowPos(
+                    *hwnd,
+                    None,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    SET_WINDOW_POS_FLAGS(0),
+                )?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
@@ -580,82 +608,85 @@ struct TileLayout;
 
 impl LayoutTrait for TileLayout {
     unsafe fn arrange_layout(&self, monitor: &mut Monitor) -> Result<()> {
-        let visible_tags = monitor.tagset[monitor.selected_tag_index];
-        let clients = &mut monitor.clients;
+        unsafe {
+            let visible_tags = monitor.tagset[monitor.selected_tag_index];
+            let clients = &mut monitor.clients;
 
-        let mut tiled_count: u32 = 0;
-        for client in clients.iter() {
-            tiled_count += Monitor::is_tiled(client, visible_tags) as u32;
-        }
-
-        if tiled_count <= 0 {
-            return Ok(());
-        }
-
-        let mut master_y: u32 = 0;
-        let mut stack_y: u32 = 0;
-
-        let master_width = if tiled_count > monitor.master_count {
-            if monitor.master_count > 0 {
-                ((monitor.client_area.width as f32) * monitor.master_factor) as i32
-            } else {
-                0
-            }
-        } else {
-            monitor.rect.width
-        };
-
-        let mut index = 0;
-        for client in clients.iter_mut().rev() {
-            if !Monitor::is_tiled(client, visible_tags) {
-                continue;
+            let mut tiled_count: u32 = 0;
+            for client in clients.iter() {
+                tiled_count += Monitor::is_tiled(client, visible_tags) as u32;
             }
 
-            let is_master = index < monitor.master_count as usize;
-            let rect = if is_master {
-                let height: u32 = (monitor.client_area.height as u32 - master_y)
-                    / (min(tiled_count, monitor.master_count) - (index as u32));
-                Rect {
-                    x: monitor.client_area.x,
-                    y: monitor.client_area.y + master_y as i32,
-                    width: master_width,
-                    height: height as i32,
+            if tiled_count <= 0 {
+                return Ok(());
+            }
+
+            let mut master_y: u32 = 0;
+            let mut stack_y: u32 = 0;
+
+            let master_width = if tiled_count > monitor.master_count {
+                if monitor.master_count > 0 {
+                    ((monitor.client_area.width as f32) * monitor.master_factor) as i32
+                } else {
+                    0
                 }
             } else {
-                let height: u32 =
-                    (monitor.client_area.height as u32 - stack_y) / (tiled_count - (index as u32));
-                Rect {
-                    x: monitor.client_area.x + master_width as i32,
-                    y: monitor.client_area.y + stack_y as i32,
-                    width: monitor.client_area.width - master_width,
-                    height: height as i32,
-                }
+                monitor.rect.width
             };
-            index += 1;
-            match self.resize(&client.hwnd, &rect) {
-                Ok(()) => (),
-                Err(e) => {
-                    println!("Error: {:?}", e);
-                    println!("Problem Client: {}", client.to_string());
-                    Err(e)?;
+
+            let mut index = 0;
+            for client in clients.iter_mut().rev() {
+                if !Monitor::is_tiled(client, visible_tags) {
+                    continue;
+                }
+
+                let is_master = index < monitor.master_count as usize;
+                let rect = if is_master {
+                    let height: u32 = (monitor.client_area.height as u32 - master_y)
+                        / (min(tiled_count, monitor.master_count) - (index as u32));
+                    Rect {
+                        x: monitor.client_area.x,
+                        y: monitor.client_area.y + master_y as i32,
+                        width: master_width,
+                        height: height as i32,
+                    }
+                } else {
+                    let height: u32 = (monitor.client_area.height as u32 - stack_y)
+                        / (tiled_count - (index as u32));
+                    Rect {
+                        x: monitor.client_area.x + master_width as i32,
+                        y: monitor.client_area.y + stack_y as i32,
+                        width: monitor.client_area.width - master_width,
+                        height: height as i32,
+                    }
+                };
+                index += 1;
+                match self.resize(&client.hwnd, &rect) {
+                    Ok(()) => (),
+                    Err(e) => {
+                        println!("Error: {:?}", e);
+                        println!("Problem Client: {}", client.to_string());
+                        Err(e)?;
+                    }
+                }
+                client.rect = rect.clone();
+
+                let next_y = (is_master as u32) * master_y
+                    + (!is_master as u32) * stack_y
+                    + rect.height as u32;
+                if next_y >= monitor.client_area.height as u32 {
+                    continue;
+                }
+
+                if is_master {
+                    master_y += rect.height as u32;
+                } else {
+                    stack_y += rect.height as u32;
                 }
             }
-            client.rect = rect.clone();
 
-            let next_y =
-                (is_master as u32) * master_y + (!is_master as u32) * stack_y + rect.height as u32;
-            if next_y >= monitor.client_area.height as u32 {
-                continue;
-            }
-
-            if is_master {
-                master_y += rect.height as u32;
-            } else {
-                stack_y += rect.height as u32;
-            }
+            Ok(())
         }
-
-        Ok(())
     }
 
     fn is_in_master_area(&self, monitor: &Monitor, x: i32, _y: i32) -> bool {
@@ -670,62 +701,67 @@ struct StackLayout;
 
 impl LayoutTrait for StackLayout {
     unsafe fn arrange_layout(&self, monitor: &mut Monitor) -> Result<()> {
-        let visible_tags = monitor.tagset[monitor.selected_tag_index];
-        let clients = &mut monitor.clients;
+        unsafe {
+            let visible_tags = monitor.tagset[monitor.selected_tag_index];
+            let clients = &mut monitor.clients;
 
-        let mut tiled_count: u32 = 0;
-        for client in clients.iter() {
-            tiled_count += Monitor::is_tiled(client, visible_tags) as u32;
-        }
-
-        if tiled_count <= 0 {
-            return Ok(());
-        }
-
-        let mut stack_y: u32 = 0;
-
-        let master_height = match (tiled_count > monitor.master_count, monitor.master_count > 0) {
-            (true, true) => ((monitor.client_area.height as f32) * monitor.master_factor) as i32,
-            (true, false) => 0,
-            (false, _) => monitor.client_area.height,
-        };
-
-        let mut index = 0;
-        for client in clients.iter_mut().rev() {
-            if !Monitor::is_tiled(client, visible_tags) {
-                continue;
+            let mut tiled_count: u32 = 0;
+            for client in clients.iter() {
+                tiled_count += Monitor::is_tiled(client, visible_tags) as u32;
             }
 
-            let is_master = index < monitor.master_count as usize;
+            if tiled_count <= 0 {
+                return Ok(());
+            }
 
-            let height = if is_master {
-                (master_height as u32 - stack_y)
-                    / (min(tiled_count, monitor.master_count) - (index as u32))
-            } else {
-                (monitor.client_area.height as u32 - stack_y) / (tiled_count - (index as u32))
-            };
+            let mut stack_y: u32 = 0;
 
-            let rect = Rect {
-                x: monitor.client_area.x,
-                y: monitor.client_area.y + stack_y as i32,
-                width: monitor.client_area.width,
-                height: height as i32,
-            };
-
-            index += 1;
-            match self.resize(&client.hwnd, &rect) {
-                Ok(()) => (),
-                Err(e) => {
-                    println!("Error: {:?}", e);
-                    println!("Problem Client: {}", client.to_string());
-                    Err(e)?;
+            let master_height = match (tiled_count > monitor.master_count, monitor.master_count > 0)
+            {
+                (true, true) => {
+                    ((monitor.client_area.height as f32) * monitor.master_factor) as i32
                 }
-            }
-            client.rect = rect.clone();
+                (true, false) => 0,
+                (false, _) => monitor.client_area.height,
+            };
 
-            stack_y += rect.height as u32;
+            let mut index = 0;
+            for client in clients.iter_mut().rev() {
+                if !Monitor::is_tiled(client, visible_tags) {
+                    continue;
+                }
+
+                let is_master = index < monitor.master_count as usize;
+
+                let height = if is_master {
+                    (master_height as u32 - stack_y)
+                        / (min(tiled_count, monitor.master_count) - (index as u32))
+                } else {
+                    (monitor.client_area.height as u32 - stack_y) / (tiled_count - (index as u32))
+                };
+
+                let rect = Rect {
+                    x: monitor.client_area.x,
+                    y: monitor.client_area.y + stack_y as i32,
+                    width: monitor.client_area.width,
+                    height: height as i32,
+                };
+
+                index += 1;
+                match self.resize(&client.hwnd, &rect) {
+                    Ok(()) => (),
+                    Err(e) => {
+                        println!("Error: {:?}", e);
+                        println!("Problem Client: {}", client.to_string());
+                        Err(e)?;
+                    }
+                }
+                client.rect = rect.clone();
+
+                stack_y += rect.height as u32;
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     fn is_in_master_area(&self, monitor: &Monitor, _x: i32, y: i32) -> bool {
@@ -855,126 +891,128 @@ lazy_static! {
 
 impl DwmrApp {
     pub unsafe fn setup(&mut self, hinstance: &HINSTANCE) -> Result<()> {
-        let wnd_class = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(Self::wnd_proc),
-            hInstance: *hinstance,
-            lpszClassName: W_APP_NAME.clone(),
-            ..Default::default()
-        };
+        unsafe {
+            let wnd_class = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(Self::wnd_proc),
+                hInstance: *hinstance,
+                lpszClassName: W_APP_NAME.clone(),
+                ..Default::default()
+            };
 
-        let class_atom = RegisterClassExW(&wnd_class);
-        if class_atom == 0 {
-            GetLastError()?;
+            let class_atom = RegisterClassExW(&wnd_class);
+            if class_atom == 0 {
+                GetLastError()?;
+            }
+
+            let hwnd_result = CreateWindowExW(
+                WINDOW_EX_STYLE::default(),
+                W_APP_NAME.clone(),
+                W_APP_NAME.clone(),
+                WINDOW_STYLE::default(),
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                None,
+                None,
+                Some(self as *mut _ as _),
+            );
+
+            if hwnd_result.0 == 0 {
+                GetLastError()?;
+            }
+
+            let cursor = LoadCursorW(None, IDC_ARROW)?;
+            let bar_wnd_class = WNDCLASSEXW {
+                cbSize: size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(Bar::bar_wnd_proc),
+                hInstance: *hinstance,
+                lpszClassName: W_BAR_NAME.clone(),
+                hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as isize),
+                hCursor: cursor,
+                ..Default::default()
+            };
+
+            let bar_class_atom = RegisterClassExW(&bar_wnd_class);
+            if bar_class_atom == 0 {
+                GetLastError()?;
+            }
+
+            self.request_update_geom()?;
+
+            let wallpaper_hwnd = FindWindowW(W_WALLPAPER_CLASS_NAME, None);
+            if wallpaper_hwnd.0 == 0 {
+                GetLastError()?;
+            }
+            self.wallpaper_hwnd = wallpaper_hwnd;
+
+            self.event_hook.push(SetWinEventHook(
+                EVENT_SYSTEM_FOREGROUND,
+                EVENT_SYSTEM_FOREGROUND,
+                None,
+                Some(Self::window_event_hook_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ));
+            self.event_hook.push(SetWinEventHook(
+                EVENT_OBJECT_SHOW,
+                EVENT_OBJECT_HIDE,
+                None,
+                Some(Self::window_event_hook_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ));
+            self.event_hook.push(SetWinEventHook(
+                EVENT_OBJECT_DESTROY,
+                EVENT_OBJECT_DESTROY,
+                None,
+                Some(Self::window_event_hook_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ));
+            self.event_hook.push(SetWinEventHook(
+                EVENT_SYSTEM_MOVESIZEEND,
+                EVENT_SYSTEM_MOVESIZEEND,
+                None,
+                Some(Self::window_event_hook_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ));
+            self.event_hook.push(SetWinEventHook(
+                EVENT_OBJECT_CLOAKED,
+                EVENT_OBJECT_UNCLOAKED,
+                None,
+                Some(Self::window_event_hook_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ));
+            self.event_hook.push(SetWinEventHook(
+                EVENT_SYSTEM_MINIMIZESTART,
+                EVENT_SYSTEM_MINIMIZEEND,
+                None,
+                Some(Self::window_event_hook_proc),
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT,
+            ));
+            self.mouse_hook = Some(SetWindowsHookExW(
+                WH_MOUSE_LL,
+                Some(Self::mouse_event_handler),
+                None,
+                0,
+            )?);
+
+            self.grab_keys()?;
+
+            Ok(())
         }
-
-        let hwnd_result = CreateWindowExW(
-            WINDOW_EX_STYLE::default(),
-            W_APP_NAME.clone(),
-            W_APP_NAME.clone(),
-            WINDOW_STYLE::default(),
-            0,
-            0,
-            0,
-            0,
-            HWND_MESSAGE,
-            None,
-            None,
-            Some(self as *mut _ as _),
-        );
-
-        if hwnd_result.0 == 0 {
-            GetLastError()?;
-        }
-
-        let cursor = LoadCursorW(None, IDC_ARROW)?;
-        let bar_wnd_class = WNDCLASSEXW {
-            cbSize: size_of::<WNDCLASSEXW>() as u32,
-            lpfnWndProc: Some(Bar::bar_wnd_proc),
-            hInstance: *hinstance,
-            lpszClassName: W_BAR_NAME.clone(),
-            hbrBackground: HBRUSH((COLOR_WINDOW.0 + 1) as isize),
-            hCursor: cursor,
-            ..Default::default()
-        };
-
-        let bar_class_atom = RegisterClassExW(&bar_wnd_class);
-        if bar_class_atom == 0 {
-            GetLastError()?;
-        }
-
-        self.request_update_geom()?;
-
-        let wallpaper_hwnd = FindWindowW(W_WALLPAPER_CLASS_NAME, None);
-        if wallpaper_hwnd.0 == 0 {
-            GetLastError()?;
-        }
-        self.wallpaper_hwnd = wallpaper_hwnd;
-
-        self.event_hook.push(SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            None,
-            Some(Self::window_event_hook_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        ));
-        self.event_hook.push(SetWinEventHook(
-            EVENT_OBJECT_SHOW,
-            EVENT_OBJECT_HIDE,
-            None,
-            Some(Self::window_event_hook_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        ));
-        self.event_hook.push(SetWinEventHook(
-            EVENT_OBJECT_DESTROY,
-            EVENT_OBJECT_DESTROY,
-            None,
-            Some(Self::window_event_hook_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        ));
-        self.event_hook.push(SetWinEventHook(
-            EVENT_SYSTEM_MOVESIZEEND,
-            EVENT_SYSTEM_MOVESIZEEND,
-            None,
-            Some(Self::window_event_hook_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        ));
-        self.event_hook.push(SetWinEventHook(
-            EVENT_OBJECT_CLOAKED,
-            EVENT_OBJECT_UNCLOAKED,
-            None,
-            Some(Self::window_event_hook_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        ));
-        self.event_hook.push(SetWinEventHook(
-            EVENT_SYSTEM_MINIMIZESTART,
-            EVENT_SYSTEM_MINIMIZEEND,
-            None,
-            Some(Self::window_event_hook_proc),
-            0,
-            0,
-            WINEVENT_OUTOFCONTEXT,
-        ));
-        self.mouse_hook = Some(SetWindowsHookExW(
-            WH_MOUSE_LL,
-            Some(Self::mouse_event_handler),
-            None,
-            0,
-        )?);
-
-        self.grab_keys()?;
-
-        Ok(())
     }
 
     unsafe extern "system" fn wnd_proc(
@@ -983,19 +1021,21 @@ impl DwmrApp {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        match msg {
-            WM_CREATE => {
-                let create_struct = lparam.0 as *const CREATESTRUCTW;
-                let this = (*create_struct).lpCreateParams as *mut Self;
-                (*this).hwnd = hwnd;
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, this as isize);
-                LRESULT::default()
-            }
-            _ => {
-                let this = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
-                match this.is_null() {
-                    true => DefWindowProcW(hwnd, msg, wparam, lparam),
-                    false => (*this).handle_message(hwnd, msg, wparam, lparam),
+        unsafe {
+            match msg {
+                WM_CREATE => {
+                    let create_struct = lparam.0 as *const CREATESTRUCTW;
+                    let this = (*create_struct).lpCreateParams as *mut Self;
+                    (*this).hwnd = hwnd;
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, this as isize);
+                    LRESULT::default()
+                }
+                _ => {
+                    let this = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut Self;
+                    match this.is_null() {
+                        true => DefWindowProcW(hwnd, msg, wparam, lparam),
+                        false => (*this).handle_message(hwnd, msg, wparam, lparam),
+                    }
                 }
             }
         }
@@ -1008,43 +1048,45 @@ impl DwmrApp {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        match msg {
-            WM_CLOSE => {
-                DestroyWindow(self.hwnd).unwrap();
-                LRESULT::default()
-            }
-            WM_DESTROY => {
-                self.cleanup().unwrap();
-                PostQuitMessage(0);
-                LRESULT::default()
-            }
-            WM_HOTKEY => {
-                self.sanitize_monitors();
-                let tag_keys_sub_len = TAG_KEYS.first().unwrap().len();
-                let tag_keys_len = TAG_KEYS.len() * tag_keys_sub_len;
-                if wparam.0 < KEYS.len() {
-                    let key = &KEYS[wparam.0];
-                    (key.func)(self, &key.arg).unwrap();
-                } else if wparam.0 < KEYS.len() + tag_keys_len {
-                    let tag_key_index = wparam.0 - KEYS.len();
-                    let tag_key_first_index = tag_key_index / tag_keys_sub_len;
-                    let tag_key_second_index = tag_key_index % tag_keys_sub_len;
-                    let key = &TAG_KEYS[tag_key_first_index][tag_key_second_index];
-                    (key.func)(self, &key.arg).unwrap();
+        unsafe {
+            match msg {
+                WM_CLOSE => {
+                    DestroyWindow(self.hwnd).unwrap();
+                    LRESULT::default()
                 }
-                LRESULT::default()
+                WM_DESTROY => {
+                    self.cleanup().unwrap();
+                    PostQuitMessage(0);
+                    LRESULT::default()
+                }
+                WM_HOTKEY => {
+                    self.sanitize_monitors();
+                    let tag_keys_sub_len = TAG_KEYS.first().unwrap().len();
+                    let tag_keys_len = TAG_KEYS.len() * tag_keys_sub_len;
+                    if wparam.0 < KEYS.len() {
+                        let key = &KEYS[wparam.0];
+                        (key.func)(self, &key.arg).unwrap();
+                    } else if wparam.0 < KEYS.len() + tag_keys_len {
+                        let tag_key_index = wparam.0 - KEYS.len();
+                        let tag_key_first_index = tag_key_index / tag_keys_sub_len;
+                        let tag_key_second_index = tag_key_index % tag_keys_sub_len;
+                        let key = &TAG_KEYS[tag_key_first_index][tag_key_second_index];
+                        (key.func)(self, &key.arg).unwrap();
+                    }
+                    LRESULT::default()
+                }
+                WM_UPDATE_DISPLAY => {
+                    println!("refresh display");
+                    let clients_tags = self.export_clients_tags();
+                    self.request_update_geom().unwrap();
+                    self.scan().unwrap();
+                    self.import_clients_tags(clients_tags);
+                    self.arrange().unwrap();
+                    self.refresh_bar().unwrap();
+                    LRESULT::default()
+                }
+                _ => DefWindowProcW(hwnd, msg, wparam, lparam),
             }
-            WM_UPDATE_DISPLAY => {
-                println!("refresh display");
-                let clients_tags = self.export_clients_tags();
-                self.request_update_geom().unwrap();
-                self.scan().unwrap();
-                self.import_clients_tags(clients_tags);
-                self.arrange().unwrap();
-                self.refresh_bar().unwrap();
-                LRESULT::default()
-            }
-            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
     }
 
@@ -1057,24 +1099,26 @@ impl DwmrApp {
         id_event_thread: u32,
         dwms_event_time: u32,
     ) {
-        let self_hwnd = FindWindowW(W_APP_NAME, None);
-        if self_hwnd.0 == 0 {
-            GetLastError().unwrap();
-        }
-        let this = GetWindowLongPtrW(self_hwnd, GWLP_USERDATA) as *mut Self;
-        if this.is_null() {
-            return;
-        }
+        unsafe {
+            let self_hwnd = FindWindowW(W_APP_NAME, None);
+            if self_hwnd.0 == 0 {
+                GetLastError().unwrap();
+            }
+            let this = GetWindowLongPtrW(self_hwnd, GWLP_USERDATA) as *mut Self;
+            if this.is_null() {
+                return;
+            }
 
-        (*this).window_event_hook(
-            hwin_event_hook,
-            event,
-            hwnd,
-            id_object,
-            id_child,
-            id_event_thread,
-            dwms_event_time,
-        );
+            (*this).window_event_hook(
+                hwin_event_hook,
+                event,
+                hwnd,
+                id_object,
+                id_child,
+                id_event_thread,
+                dwms_event_time,
+            );
+        }
     }
 
     unsafe fn window_event_hook(
@@ -1087,129 +1131,131 @@ impl DwmrApp {
         _id_event_thread: u32,
         _dwms_event_time: u32,
     ) {
-        let is_target = (id_object == OBJID_WINDOW.0) && (id_child == CHILDID_SELF as i32);
-        if !is_target {
-            return;
-        }
+        unsafe {
+            let is_target = (id_object == OBJID_WINDOW.0) && (id_child == CHILDID_SELF as i32);
+            if !is_target {
+                return;
+            }
 
-        if IsWindow(hwnd) == FALSE {
-            return;
-        }
+            if IsWindow(hwnd) == FALSE {
+                return;
+            }
 
-        let mut client_name_buf = [0u16; 256];
-        GetWindowTextW(hwnd, client_name_buf.as_mut());
-        let client_name = PCWSTR::from_raw(client_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
+            let mut client_name_buf = [0u16; 256];
+            GetWindowTextW(hwnd, client_name_buf.as_mut());
+            let client_name = PCWSTR::from_raw(client_name_buf.as_ptr())
+                .to_string()
+                .unwrap();
 
-        let mut class_name_buf = [0u16; 256];
-        if GetClassNameW(hwnd, class_name_buf.as_mut()) == 0 {
+            let mut class_name_buf = [0u16; 256];
+            if GetClassNameW(hwnd, class_name_buf.as_mut()) == 0 {
+                SetLastError(WIN32_ERROR(0));
+                return;
+            }
+            let class_name = PCWSTR::from_raw(class_name_buf.as_ptr())
+                .to_string()
+                .unwrap();
             SetLastError(WIN32_ERROR(0));
-            return;
-        }
-        let class_name = PCWSTR::from_raw(class_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
-        SetLastError(WIN32_ERROR(0));
 
-        let is_disallowed_title = DISALLOWED_TITLE.contains(&client_name);
-        let is_disallowed_class = DISALLOWED_CLASS.contains(&class_name);
+            let is_disallowed_title = DISALLOWED_TITLE.contains(&client_name);
+            let is_disallowed_class = DISALLOWED_CLASS.contains(&class_name);
 
-        if is_disallowed_title || is_disallowed_class {
-            return;
-        }
+            if is_disallowed_title || is_disallowed_class {
+                return;
+            }
 
-        self.sanitize_monitors();
+            self.sanitize_monitors();
 
-        match event {
-            EVENT_SYSTEM_FOREGROUND => {
-                if hwnd == self.wallpaper_hwnd {
-                    let mut cursor_pos = POINT::default();
-                    let _ = GetCursorPos(&mut cursor_pos);
-                    if let Some(index) = self.monitors.iter().position(|monitor| -> bool {
-                        monitor.is_in_monitor(cursor_pos.x, cursor_pos.y)
+            match event {
+                EVENT_SYSTEM_FOREGROUND => {
+                    if hwnd == self.wallpaper_hwnd {
+                        let mut cursor_pos = POINT::default();
+                        let _ = GetCursorPos(&mut cursor_pos);
+                        if let Some(index) = self.monitors.iter().position(|monitor| -> bool {
+                            monitor.is_in_monitor(cursor_pos.x, cursor_pos.y)
+                        }) {
+                            self.selected_monitor_index = Some(index);
+                            self.refresh_bar().unwrap();
+                        }
+                        return;
+                    }
+
+                    let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
+                        monitor
+                            .clients
+                            .iter()
+                            .any(|client| -> bool { client.hwnd == hwnd })
+                    });
+                    if is_new_clinet {
+                        if !Self::is_manageable(&hwnd).unwrap() {
+                            return;
+                        }
+                        let client = self.manage(&hwnd).unwrap();
+                        self.monitors[client.monitor].arrangemon().unwrap();
+                    }
+                    self.set_focus(hwnd);
+                    self.refresh_bar().unwrap();
+                }
+                EVENT_OBJECT_UNCLOAKED | EVENT_OBJECT_SHOW => {
+                    let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
+                        monitor
+                            .clients
+                            .iter()
+                            .any(|client| -> bool { client.hwnd == hwnd })
+                    });
+                    if is_new_clinet {
+                        if !Self::is_manageable(&hwnd).unwrap() {
+                            return;
+                        }
+                        let client = self.manage(&hwnd).unwrap();
+                        self.monitors[client.monitor].arrangemon().unwrap();
+                    }
+                    self.set_focus(hwnd);
+                    self.refresh_bar().unwrap();
+                }
+                EVENT_OBJECT_CLOAKED | EVENT_OBJECT_DESTROY => {
+                    self.unmanage(&hwnd).unwrap();
+                    self.refresh_bar().unwrap();
+                }
+                EVENT_OBJECT_HIDE => {
+                    if self.monitors.iter().any(|monitor| -> bool {
+                        monitor
+                            .clients
+                            .iter()
+                            .any(|client| -> bool { client.hwnd == hwnd && client.is_hide })
                     }) {
-                        self.selected_monitor_index = Some(index);
-                        self.refresh_bar().unwrap();
-                    }
-                    return;
-                }
-
-                let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
-                    monitor
-                        .clients
-                        .iter()
-                        .any(|client| -> bool { client.hwnd == hwnd })
-                });
-                if is_new_clinet {
-                    if !Self::is_manageable(&hwnd).unwrap() {
                         return;
                     }
-                    let client = self.manage(&hwnd).unwrap();
-                    self.monitors[client.monitor].arrangemon().unwrap();
+                    self.unmanage(&hwnd).unwrap();
+                    self.refresh_bar().unwrap();
                 }
-                self.set_focus(hwnd);
-                self.refresh_bar().unwrap();
-            }
-            EVENT_OBJECT_UNCLOAKED | EVENT_OBJECT_SHOW => {
-                let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
-                    monitor
-                        .clients
-                        .iter()
-                        .any(|client| -> bool { client.hwnd == hwnd })
-                });
-                if is_new_clinet {
-                    if !Self::is_manageable(&hwnd).unwrap() {
-                        return;
+                EVENT_SYSTEM_MOVESIZEEND => {
+                    let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
+                        monitor
+                            .clients
+                            .iter()
+                            .any(|client| -> bool { client.hwnd == hwnd })
+                    });
+                    if is_new_clinet {
+                        if !Self::is_manageable(&hwnd).unwrap() {
+                            return;
+                        }
+                        let client = self.manage(&hwnd).unwrap();
+                        self.monitors[client.monitor].arrangemon().unwrap();
                     }
-                    let client = self.manage(&hwnd).unwrap();
-                    self.monitors[client.monitor].arrangemon().unwrap();
+                    self.reallocate_window(&hwnd).unwrap();
+                    self.refresh_bar().unwrap();
                 }
-                self.set_focus(hwnd);
-                self.refresh_bar().unwrap();
-            }
-            EVENT_OBJECT_CLOAKED | EVENT_OBJECT_DESTROY => {
-                self.unmanage(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
-            }
-            EVENT_OBJECT_HIDE => {
-                if self.monitors.iter().any(|monitor| -> bool {
-                    monitor
-                        .clients
-                        .iter()
-                        .any(|client| -> bool { client.hwnd == hwnd && client.is_hide })
-                }) {
-                    return;
+                EVENT_SYSTEM_MINIMIZESTART => {
+                    self.minimize(&hwnd).unwrap();
+                    self.refresh_bar().unwrap();
                 }
-                self.unmanage(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
-            }
-            EVENT_SYSTEM_MOVESIZEEND => {
-                let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
-                    monitor
-                        .clients
-                        .iter()
-                        .any(|client| -> bool { client.hwnd == hwnd })
-                });
-                if is_new_clinet {
-                    if !Self::is_manageable(&hwnd).unwrap() {
-                        return;
-                    }
-                    let client = self.manage(&hwnd).unwrap();
-                    self.monitors[client.monitor].arrangemon().unwrap();
+                EVENT_SYSTEM_MINIMIZEEND => {
+                    self.unminimize(&hwnd).unwrap();
+                    self.refresh_bar().unwrap();
                 }
-                self.reallocate_window(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
+                _ => (),
             }
-            EVENT_SYSTEM_MINIMIZESTART => {
-                self.minimize(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
-            }
-            EVENT_SYSTEM_MINIMIZEEND => {
-                self.unminimize(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
-            }
-            _ => (),
         }
     }
 
@@ -1218,23 +1264,25 @@ impl DwmrApp {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        if ncode < 0 || wparam.0 != WM_LBUTTONDOWN as usize {
+        unsafe {
+            if ncode < 0 || wparam.0 != WM_LBUTTONDOWN as usize {
+                return CallNextHookEx(None, ncode, wparam, lparam);
+            }
+
+            let self_hwnd = FindWindowW(W_APP_NAME, None);
+            if self_hwnd.0 == 0 {
+                return CallNextHookEx(None, ncode, wparam, lparam);
+            }
+
+            let this = GetWindowLongPtrW(self_hwnd, GWLP_USERDATA) as *mut Self;
+            if this.is_null() {
+                return CallNextHookEx(None, ncode, wparam, lparam);
+            }
+
+            let click_point = &(*(lparam.0 as *const MSLLHOOKSTRUCT)).pt;
+            (*this).monitor_click_handler(click_point).unwrap();
             return CallNextHookEx(None, ncode, wparam, lparam);
         }
-
-        let self_hwnd = FindWindowW(W_APP_NAME, None);
-        if self_hwnd.0 == 0 {
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
-
-        let this = GetWindowLongPtrW(self_hwnd, GWLP_USERDATA) as *mut Self;
-        if this.is_null() {
-            return CallNextHookEx(None, ncode, wparam, lparam);
-        }
-
-        let click_point = &(*(lparam.0 as *const MSLLHOOKSTRUCT)).pt;
-        (*this).monitor_click_handler(click_point).unwrap();
-        return CallNextHookEx(None, ncode, wparam, lparam);
     }
 
     unsafe fn monitor_click_handler(&mut self, mouse_point: &POINT) -> Result<()> {
@@ -1246,137 +1294,140 @@ impl DwmrApp {
             return Ok(());
         }
         self.selected_monitor_index = selected_monitor_index;
-        self.refresh_bar()?;
+        unsafe { self.refresh_bar() }?;
         Ok(())
     }
 
     unsafe fn sanitize_monitors(&mut self) {
         for monitor in self.monitors.iter_mut() {
-            monitor.sanitize_clients();
+            unsafe { monitor.sanitize_clients() };
         }
     }
 
     unsafe fn reallocate_window(&mut self, hwnd: &HWND) -> Result<()> {
-        let mut original_window_rect = RECT::default();
-        let mut mouse_point: POINT = POINT::default();
-        GetCursorPos(&mut mouse_point)?;
-        GetWindowRect(hwnd.clone(), &mut original_window_rect)?;
-        let original_rect = Rect::from_win_rect(&original_window_rect);
+        unsafe {
+            let mut original_window_rect = RECT::default();
+            let mut mouse_point: POINT = POINT::default();
+            GetCursorPos(&mut mouse_point)?;
+            GetWindowRect(hwnd.clone(), &mut original_window_rect)?;
+            let original_rect = Rect::from_win_rect(&original_window_rect);
 
-        let mut contained_monitor_index: Option<usize> = None;
-        let mut found_monitor_index: Option<usize> = None;
-        let mut found_client_index: Option<usize> = None;
-        for (monitor_index, monitor) in self.monitors.iter().enumerate() {
-            let monitor_rect = &monitor.rect;
-            let left_check = monitor_rect.x <= mouse_point.x;
-            let right_check = mouse_point.x <= monitor_rect.x + monitor_rect.width;
-            let top_check = monitor_rect.y <= mouse_point.y;
-            let bottom_check = mouse_point.y <= monitor_rect.y + monitor_rect.height;
+            let mut contained_monitor_index: Option<usize> = None;
+            let mut found_monitor_index: Option<usize> = None;
+            let mut found_client_index: Option<usize> = None;
+            for (monitor_index, monitor) in self.monitors.iter().enumerate() {
+                let monitor_rect = &monitor.rect;
+                let left_check = monitor_rect.x <= mouse_point.x;
+                let right_check = mouse_point.x <= monitor_rect.x + monitor_rect.width;
+                let top_check = monitor_rect.y <= mouse_point.y;
+                let bottom_check = mouse_point.y <= monitor_rect.y + monitor_rect.height;
 
-            if left_check && right_check && top_check && bottom_check {
-                contained_monitor_index = Some(monitor_index);
+                if left_check && right_check && top_check && bottom_check {
+                    contained_monitor_index = Some(monitor_index);
+                }
+
+                let client_index = monitor.find_client_index(hwnd);
+                if client_index.is_none() {
+                    continue;
+                }
+
+                let client_index = client_index.unwrap();
+
+                if monitor.clients[client_index].rect == original_rect {
+                    return Ok(());
+                }
+
+                found_monitor_index = Some(monitor_index);
+                found_client_index = Some(client_index);
+
+                if contained_monitor_index.is_some()
+                    && found_monitor_index.is_some()
+                    && found_client_index.is_some()
+                {
+                    break;
+                }
             }
 
-            let client_index = monitor.find_client_index(hwnd);
-            if client_index.is_none() {
-                continue;
-            }
-
-            let client_index = client_index.unwrap();
-
-            if monitor.clients[client_index].rect == original_rect {
+            if found_monitor_index.is_none()
+                || found_client_index.is_none()
+                || contained_monitor_index.is_none()
+            {
                 return Ok(());
             }
 
-            found_monitor_index = Some(monitor_index);
-            found_client_index = Some(client_index);
+            let contained_monitor_index = contained_monitor_index.unwrap();
+            let found_monitor_index = found_monitor_index.unwrap();
+            let found_client_index = found_client_index.unwrap();
 
-            if contained_monitor_index.is_some()
-                && found_monitor_index.is_some()
-                && found_client_index.is_some()
-            {
-                break;
+            let found_monitor = &self.monitors[found_monitor_index];
+            let previous_master_threshold =
+                (found_monitor.clients.len() as i32) - (found_monitor.master_count as i32);
+            let previous_is_in_master = (found_client_index as i32) >= previous_master_threshold;
+            let is_in_master = found_monitor.layout.unwrap().is_in_master_area(
+                found_monitor,
+                mouse_point.x,
+                mouse_point.y,
+            );
+            let is_same_monitor = contained_monitor_index == found_monitor_index;
+            let is_in_same_area = previous_is_in_master == is_in_master;
+
+            if is_same_monitor && is_in_same_area {
+                self.monitors[found_monitor_index].arrangemon()?;
+                self.set_focus(*hwnd);
+                return Ok(());
             }
-        }
 
-        if found_monitor_index.is_none()
-            || found_client_index.is_none()
-            || contained_monitor_index.is_none()
-        {
-            return Ok(());
-        }
+            let current_monitor = &self.monitors[found_monitor_index];
+            let current_monitor_visible_tags =
+                current_monitor.tagset[current_monitor.selected_tag_index];
+            let mut next_focus_index = (found_client_index + 1) % current_monitor.clients.len();
+            while !Monitor::is_visible(
+                &self.monitors[found_monitor_index].clients[next_focus_index],
+                current_monitor_visible_tags,
+            ) {
+                next_focus_index += 1;
+                next_focus_index %= current_monitor.clients.len();
+            }
 
-        let contained_monitor_index = contained_monitor_index.unwrap();
-        let found_monitor_index = found_monitor_index.unwrap();
-        let found_client_index = found_client_index.unwrap();
+            if found_client_index == next_focus_index {
+                self.monitors[found_monitor_index].selected_hwnd = HWND(0);
+            } else {
+                self.monitors[found_monitor_index].selected_hwnd =
+                    current_monitor.clients[next_focus_index].hwnd;
+            }
 
-        let found_monitor = &self.monitors[found_monitor_index];
-        let previous_master_threshold =
-            (found_monitor.clients.len() as i32) - (found_monitor.master_count as i32);
-        let previous_is_in_master = (found_client_index as i32) >= previous_master_threshold;
-        let is_in_master = found_monitor.layout.unwrap().is_in_master_area(
-            found_monitor,
-            mouse_point.x,
-            mouse_point.y,
-        );
-        let is_same_monitor = contained_monitor_index == found_monitor_index;
-        let is_in_same_area = previous_is_in_master == is_in_master;
-
-        if is_same_monitor && is_in_same_area {
-            self.monitors[found_monitor_index].arrangemon()?;
-            self.set_focus(*hwnd);
-            return Ok(());
-        }
-
-        let current_monitor = &self.monitors[found_monitor_index];
-        let current_monitor_visible_tags =
-            current_monitor.tagset[current_monitor.selected_tag_index];
-        let mut next_focus_index = (found_client_index + 1) % current_monitor.clients.len();
-        while !Monitor::is_visible(
-            &self.monitors[found_monitor_index].clients[next_focus_index],
-            current_monitor_visible_tags,
-        ) {
-            next_focus_index += 1;
-            next_focus_index %= current_monitor.clients.len();
-        }
-
-        if found_client_index == next_focus_index {
-            self.monitors[found_monitor_index].selected_hwnd = HWND(0);
-        } else {
-            self.monitors[found_monitor_index].selected_hwnd =
-                current_monitor.clients[next_focus_index].hwnd;
-        }
-
-        let mut client = self.monitors[found_monitor_index].clients[found_client_index].clone();
-        self.monitors[found_monitor_index]
-            .clients
-            .remove(found_client_index);
-
-        //client.tags = self.monitors[contained_monitor_index].tagset[self.monitors[contained_monitor_index].selected_tag_index];
-        let prev_monitor_tag = self.monitors[contained_monitor_index].tagset
-            [self.monitors[contained_monitor_index].selected_tag_index];
-        let monitor_selected_tag_index = self.monitors[contained_monitor_index].selected_tag_index;
-        self.monitors[contained_monitor_index].tagset[monitor_selected_tag_index] =
-            prev_monitor_tag | client.tags;
-
-        let clients_count = self.monitors[contained_monitor_index].clients.len();
-        let master_count = self.monitors[contained_monitor_index].master_count as usize;
-        client.monitor = contained_monitor_index;
-        if !is_in_master && (master_count <= clients_count) {
-            self.monitors[contained_monitor_index]
+            let mut client = self.monitors[found_monitor_index].clients[found_client_index].clone();
+            self.monitors[found_monitor_index]
                 .clients
-                .insert(clients_count - master_count, client);
-        } else {
-            self.monitors[contained_monitor_index].clients.push(client);
-        }
+                .remove(found_client_index);
 
-        self.arrange()?;
-        self.set_focus(*hwnd);
+            //client.tags = self.monitors[contained_monitor_index].tagset[self.monitors[contained_monitor_index].selected_tag_index];
+            let prev_monitor_tag = self.monitors[contained_monitor_index].tagset
+                [self.monitors[contained_monitor_index].selected_tag_index];
+            let monitor_selected_tag_index =
+                self.monitors[contained_monitor_index].selected_tag_index;
+            self.monitors[contained_monitor_index].tagset[monitor_selected_tag_index] =
+                prev_monitor_tag | client.tags;
 
-        for monitor in self.monitors.iter_mut() {
-            let _result = monitor.update_bar(monitor.bar.is_selected_monitor);
+            let clients_count = self.monitors[contained_monitor_index].clients.len();
+            let master_count = self.monitors[contained_monitor_index].master_count as usize;
+            client.monitor = contained_monitor_index;
+            if !is_in_master && (master_count <= clients_count) {
+                self.monitors[contained_monitor_index]
+                    .clients
+                    .insert(clients_count - master_count, client);
+            } else {
+                self.monitors[contained_monitor_index].clients.push(client);
+            }
+
+            self.arrange()?;
+            self.set_focus(*hwnd);
+
+            for monitor in self.monitors.iter_mut() {
+                let _result = monitor.update_bar(monitor.bar.is_selected_monitor);
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     fn set_focus(&mut self, hwnd: HWND) {
@@ -1406,42 +1457,46 @@ impl DwmrApp {
     }
 
     unsafe fn request_update_geom(&mut self) -> Result<()> {
-        for monitor in self.monitors.iter() {
-            for client in monitor.clients.iter() {
-                ShowWindow(client.hwnd, SW_RESTORE);
+        unsafe {
+            for monitor in self.monitors.iter() {
+                for client in monitor.clients.iter() {
+                    ShowWindow(client.hwnd, SW_RESTORE);
+                }
             }
+
+            self.monitors.clear();
+
+            let monitors = GetSystemMetrics(SM_CMONITORS) as usize;
+            self.monitors.reserve(monitors);
+
+            let lparam = LPARAM(self as *mut _ as isize);
+            if EnumDisplayMonitors(None, None, Some(Self::update_geom), lparam) == FALSE {
+                return Ok(());
+            }
+            Ok(())
         }
-
-        self.monitors.clear();
-
-        let monitors = GetSystemMetrics(SM_CMONITORS) as usize;
-        self.monitors.reserve(monitors);
-
-        let lparam = LPARAM(self as *mut _ as isize);
-        if EnumDisplayMonitors(None, None, Some(Self::update_geom), lparam) == FALSE {
-            return Ok(());
-        }
-        Ok(())
     }
 
     unsafe fn grab_keys(&self) -> Result<()> {
-        if self.hwnd.0 == 0 {
-            return Ok(());
-        }
+        unsafe {
+            if self.hwnd.0 == 0 {
+                return Ok(());
+            }
 
-        let mut key_index = 0;
-        for key in KEYS.iter() {
-            RegisterHotKey(self.hwnd, key_index, key.mod_key, key.key as u32)?;
-            key_index += 1;
-        }
-
-        for tag_keys in TAG_KEYS.iter() {
-            for key in tag_keys.iter() {
+            let mut key_index = 0;
+            for key in KEYS.iter() {
                 RegisterHotKey(self.hwnd, key_index, key.mod_key, key.key as u32)?;
                 key_index += 1;
             }
+
+            for tag_keys in TAG_KEYS.iter() {
+                for key in tag_keys.iter() {
+                    RegisterHotKey(self.hwnd, key_index, key.mod_key, key.key as u32)?;
+                    key_index += 1;
+                }
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     unsafe extern "system" fn update_geom(
@@ -1450,667 +1505,712 @@ impl DwmrApp {
         _: *mut RECT,
         lparam: LPARAM,
     ) -> BOOL {
-        let mut monitor_info = MONITORINFOEXW {
-            monitorInfo: MONITORINFO {
-                cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+        unsafe {
+            let mut monitor_info = MONITORINFOEXW {
+                monitorInfo: MONITORINFO {
+                    cbSize: std::mem::size_of::<MONITORINFOEXW>() as u32,
+                    ..Default::default()
+                },
                 ..Default::default()
-            },
-            ..Default::default()
-        };
-        if GetMonitorInfoW(hmonitor, &mut monitor_info.monitorInfo) == FALSE {
-            return TRUE;
+            };
+            if GetMonitorInfoW(hmonitor, &mut monitor_info.monitorInfo) == FALSE {
+                return TRUE;
+            }
+
+            let _monitor_name = PCWSTR::from_raw(monitor_info.szDevice.as_ptr())
+                .to_string()
+                .unwrap();
+
+            let this = lparam.0 as *mut DwmrApp;
+
+            let mut monitor = Monitor {
+                name: monitor_info.szDevice,
+                index: (*this).monitors.len(),
+                rect: Rect::from_win_rect(&monitor_info.monitorInfo.rcMonitor),
+                client_area: Rect::from_win_rect(&monitor_info.monitorInfo.rcWork),
+                master_count: 1,
+                master_factor: 0.5,
+                tagset: [1, 1],
+                ..Default::default()
+            };
+
+            monitor.client_area.y += BAR_HEIGHT as i32;
+            monitor.client_area.height -= BAR_HEIGHT as i32;
+            monitor.bar.selected_tags = 1;
+
+            let display_rect = monitor.rect.clone();
+            (*this).monitors.push(monitor);
+            (*this)
+                .monitors
+                .last_mut()
+                .as_mut()
+                .unwrap()
+                .bar
+                .master_hwnd = (*this).hwnd;
+            (*this)
+                .monitors
+                .last_mut()
+                .as_mut()
+                .unwrap()
+                .bar
+                .setup_bar(&display_rect)
+                .unwrap();
+            TRUE
         }
-
-        let _monitor_name = PCWSTR::from_raw(monitor_info.szDevice.as_ptr())
-            .to_string()
-            .unwrap();
-
-        let this = lparam.0 as *mut DwmrApp;
-
-        let mut monitor = Monitor {
-            name: monitor_info.szDevice,
-            index: (*this).monitors.len(),
-            rect: Rect::from_win_rect(&monitor_info.monitorInfo.rcMonitor),
-            client_area: Rect::from_win_rect(&monitor_info.monitorInfo.rcWork),
-            master_count: 1,
-            master_factor: 0.5,
-            tagset: [1, 1],
-            ..Default::default()
-        };
-
-        monitor.client_area.y += BAR_HEIGHT as i32;
-        monitor.client_area.height -= BAR_HEIGHT as i32;
-        monitor.bar.selected_tags = 1;
-
-        let display_rect = monitor.rect.clone();
-        (*this).monitors.push(monitor);
-        (*this)
-            .monitors
-            .last_mut()
-            .as_mut()
-            .unwrap()
-            .bar
-            .master_hwnd = (*this).hwnd;
-        (*this)
-            .monitors
-            .last_mut()
-            .as_mut()
-            .unwrap()
-            .bar
-            .setup_bar(&display_rect)
-            .unwrap();
-        TRUE
     }
 
     unsafe fn sendmon(&mut self, client: Client, target_monitor_index: usize) -> Result<()> {
-        if client.monitor == target_monitor_index {
-            return Ok(());
+        unsafe {
+            if client.monitor == target_monitor_index {
+                return Ok(());
+            }
+
+            let found_index: Option<usize> =
+                self.monitors[client.monitor].find_client_index(&client.hwnd);
+
+            if found_index.is_none() {
+                return Ok(());
+            }
+
+            let found_index = found_index.unwrap();
+
+            let current_monitor = &self.monitors[client.monitor];
+            let current_monitor_visible_tags =
+                current_monitor.tagset[current_monitor.selected_tag_index];
+            let mut next_focus_index = (found_index + 1) % current_monitor.clients.len();
+            while !Monitor::is_visible(
+                &self.monitors[client.monitor].clients[next_focus_index],
+                current_monitor_visible_tags,
+            ) {
+                next_focus_index += 1;
+                next_focus_index %= current_monitor.clients.len();
+            }
+
+            if found_index == next_focus_index {
+                self.monitors[client.monitor].selected_hwnd = HWND(0);
+            } else {
+                self.monitors[client.monitor].selected_hwnd =
+                    current_monitor.clients[next_focus_index].hwnd;
+            }
+
+            self.monitors[client.monitor].clients.remove(found_index);
+
+            let mut new_client = client;
+            let new_client_hwnd = new_client.hwnd;
+            //new_client.tags = self.monitors[target_monitor_index].tagset[self.monitors[target_monitor_index].selected_tag_index];
+            let prev_monitor_tag = self.monitors[target_monitor_index].tagset
+                [self.monitors[target_monitor_index].selected_tag_index];
+            let monitor_selected_tag_index = self.monitors[target_monitor_index].selected_tag_index;
+            self.monitors[target_monitor_index].tagset[monitor_selected_tag_index] =
+                prev_monitor_tag | new_client.tags;
+            new_client.monitor = target_monitor_index;
+            self.monitors[target_monitor_index].clients.push(new_client);
+
+            self.selected_monitor_index = Some(target_monitor_index);
+            self.monitors[target_monitor_index].selected_hwnd = new_client_hwnd;
+
+            self.arrange()?;
+            self.refresh_focus()?;
+            self.refresh_bar()?;
+            Ok(())
         }
-
-        let found_index: Option<usize> =
-            self.monitors[client.monitor].find_client_index(&client.hwnd);
-
-        if found_index.is_none() {
-            return Ok(());
-        }
-
-        let found_index = found_index.unwrap();
-
-        let current_monitor = &self.monitors[client.monitor];
-        let current_monitor_visible_tags =
-            current_monitor.tagset[current_monitor.selected_tag_index];
-        let mut next_focus_index = (found_index + 1) % current_monitor.clients.len();
-        while !Monitor::is_visible(
-            &self.monitors[client.monitor].clients[next_focus_index],
-            current_monitor_visible_tags,
-        ) {
-            next_focus_index += 1;
-            next_focus_index %= current_monitor.clients.len();
-        }
-
-        if found_index == next_focus_index {
-            self.monitors[client.monitor].selected_hwnd = HWND(0);
-        } else {
-            self.monitors[client.monitor].selected_hwnd =
-                current_monitor.clients[next_focus_index].hwnd;
-        }
-
-        self.monitors[client.monitor].clients.remove(found_index);
-
-        let mut new_client = client;
-        let new_client_hwnd = new_client.hwnd;
-        //new_client.tags = self.monitors[target_monitor_index].tagset[self.monitors[target_monitor_index].selected_tag_index];
-        let prev_monitor_tag = self.monitors[target_monitor_index].tagset
-            [self.monitors[target_monitor_index].selected_tag_index];
-        let monitor_selected_tag_index = self.monitors[target_monitor_index].selected_tag_index;
-        self.monitors[target_monitor_index].tagset[monitor_selected_tag_index] =
-            prev_monitor_tag | new_client.tags;
-        new_client.monitor = target_monitor_index;
-        self.monitors[target_monitor_index].clients.push(new_client);
-
-        self.selected_monitor_index = Some(target_monitor_index);
-        self.monitors[target_monitor_index].selected_hwnd = new_client_hwnd;
-
-        self.arrange()?;
-        self.refresh_focus()?;
-        self.refresh_bar()?;
-        Ok(())
     }
 
     pub unsafe fn set_monitor_factor(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
+
+            let factor_offset = arg.as_ref().unwrap().f;
+
+            self.monitors[self.selected_monitor_index.unwrap()].master_factor += factor_offset;
+            self.monitors[self.selected_monitor_index.unwrap()].arrangemon()?;
+            Ok(())
         }
-
-        let factor_offset = arg.as_ref().unwrap().f;
-
-        self.monitors[self.selected_monitor_index.unwrap()].master_factor += factor_offset;
-        self.monitors[self.selected_monitor_index.unwrap()].arrangemon()?;
-        Ok(())
     }
 
     pub unsafe fn tag_monitor(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
+
+            if self.selected_monitor_index.is_none() {
+                return Ok(());
+            }
+
+            let index_offset = arg.as_ref().unwrap().i;
+
+            let original_index = self.selected_monitor_index.unwrap() as i32;
+            let monitors_len = self.monitors.len() as i32;
+            let mut applied_index = (original_index + index_offset) % monitors_len;
+            applied_index += monitors_len * (applied_index < 0) as i32;
+            let new_index = applied_index as usize;
+
+            let selected_monitor = &self.monitors[self.selected_monitor_index.unwrap()];
+            let selected_client_index = selected_monitor.get_selected_client_index();
+
+            if selected_client_index.is_none() {
+                return Ok(());
+            }
+
+            let selected_client = selected_monitor.clients[selected_client_index.unwrap()].clone();
+            self.sendmon(selected_client, new_index)?;
+            Ok(())
         }
-
-        if self.selected_monitor_index.is_none() {
-            return Ok(());
-        }
-
-        let index_offset = arg.as_ref().unwrap().i;
-
-        let original_index = self.selected_monitor_index.unwrap() as i32;
-        let monitors_len = self.monitors.len() as i32;
-        let mut applied_index = (original_index + index_offset) % monitors_len;
-        applied_index += monitors_len * (applied_index < 0) as i32;
-        let new_index = applied_index as usize;
-
-        let selected_monitor = &self.monitors[self.selected_monitor_index.unwrap()];
-        let selected_client_index = selected_monitor.get_selected_client_index();
-
-        if selected_client_index.is_none() {
-            return Ok(());
-        }
-
-        let selected_client = selected_monitor.clients[selected_client_index.unwrap()].clone();
-        self.sendmon(selected_client, new_index)?;
-        Ok(())
     }
 
     unsafe fn refresh_bar(&mut self) -> Result<()> {
-        let selected_monitor_index = self.selected_monitor_index;
-        for monitor in self.monitors.iter_mut() {
-            let is_selected_monitor = selected_monitor_index.is_some()
-                && monitor.index == selected_monitor_index.unwrap();
-            monitor.update_bar(is_selected_monitor);
+        unsafe {
+            let selected_monitor_index = self.selected_monitor_index;
+            for monitor in self.monitors.iter_mut() {
+                let is_selected_monitor = selected_monitor_index.is_some()
+                    && monitor.index == selected_monitor_index.unwrap();
+                monitor.update_bar(is_selected_monitor);
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     unsafe fn refresh_current_focus(&mut self) -> Result<()> {
-        let focus_hwnd = GetForegroundWindow();
-        self.selected_monitor_index = Some(0);
-        for (monitor_index, monitor) in self.monitors.iter_mut().enumerate() {
-            if monitor.find_client_index(&focus_hwnd).is_none() {
-                continue;
-            }
+        unsafe {
+            let focus_hwnd = GetForegroundWindow();
+            self.selected_monitor_index = Some(0);
+            for (monitor_index, monitor) in self.monitors.iter_mut().enumerate() {
+                if monitor.find_client_index(&focus_hwnd).is_none() {
+                    continue;
+                }
 
-            self.selected_monitor_index = Some(monitor_index);
-            monitor.selected_hwnd = focus_hwnd;
-            break;
+                self.selected_monitor_index = Some(monitor_index);
+                monitor.selected_hwnd = focus_hwnd;
+                break;
+            }
+            self.refresh_bar()?;
+            Ok(())
         }
-        self.refresh_bar()?;
-        Ok(())
     }
 
     pub unsafe fn scan(&mut self) -> Result<()> {
-        EnumWindows(Some(Self::scan_enum), LPARAM(self as *mut _ as isize))?;
+        unsafe {
+            EnumWindows(Some(Self::scan_enum), LPARAM(self as *mut _ as isize))?;
 
-        self.refresh_current_focus()?;
-        let selected_monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
+            self.refresh_current_focus()?;
+            let selected_monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
 
-        let selected_client_index = selected_monitor.get_selected_client_index();
-        if selected_client_index.is_none() {
-            return Ok(());
+            let selected_client_index = selected_monitor.get_selected_client_index();
+            if selected_client_index.is_none() {
+                return Ok(());
+            }
+
+            let selected_client_index = selected_client_index.unwrap();
+            let selected_client = selected_monitor.clients[selected_client_index].clone();
+            selected_monitor.clients.remove(selected_client_index);
+            selected_monitor.clients.push(selected_client);
+
+            Ok(())
         }
-
-        let selected_client_index = selected_client_index.unwrap();
-        let selected_client = selected_monitor.clients[selected_client_index].clone();
-        selected_monitor.clients.remove(selected_client_index);
-        selected_monitor.clients.push(selected_client);
-
-        Ok(())
     }
 
     unsafe extern "system" fn scan_enum(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        if !Self::is_manageable(&hwnd).unwrap() {
-            return TRUE;
-        }
+        unsafe {
+            if !Self::is_manageable(&hwnd).unwrap() {
+                return TRUE;
+            }
 
-        let this = lparam.0 as *mut Self;
-        if this.is_null() {
-            return TRUE;
-        }
+            let this = lparam.0 as *mut Self;
+            if this.is_null() {
+                return TRUE;
+            }
 
-        (*this).manage(&hwnd).unwrap();
-        TRUE
+            (*this).manage(&hwnd).unwrap();
+            TRUE
+        }
     }
 
     unsafe fn is_cloaked(hwnd: &HWND) -> Result<bool> {
-        let mut cloaked_val = 0;
-        DwmGetWindowAttribute(
-            *hwnd,
-            DWMWA_CLOAKED,
-            (&mut cloaked_val) as *const _ as *mut _,
-            size_of::<u32>() as u32,
-        )?;
-        let is_cloaked = cloaked_val > 0;
+        unsafe {
+            let mut cloaked_val = 0;
+            DwmGetWindowAttribute(
+                *hwnd,
+                DWMWA_CLOAKED,
+                (&mut cloaked_val) as *const _ as *mut _,
+                size_of::<u32>() as u32,
+            )?;
+            let is_cloaked = cloaked_val > 0;
 
-        Ok(is_cloaked)
+            Ok(is_cloaked)
+        }
     }
 
     unsafe fn is_debugged(hwnd: &HWND) -> Result<bool> {
-        let mut process_id: u32 = 0;
-        if GetWindowThreadProcessId(*hwnd, Some(&mut process_id as *mut _)) == 0 {
-            GetLastError()?;
-        }
+        unsafe {
+            let mut process_id: u32 = 0;
+            if GetWindowThreadProcessId(*hwnd, Some(&mut process_id as *mut _)) == 0 {
+                GetLastError()?;
+            }
 
-        let handle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, process_id);
-        if let Err(ref e) = handle {
-            if e.code() != HRESULT::from(ERROR_ACCESS_DENIED) {
-                return Err(e.clone());
+            let handle = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, process_id);
+            if let Err(ref e) = handle {
+                if e.code() != HRESULT::from(ERROR_ACCESS_DENIED) {
+                    return Err(e.clone());
+                } else {
+                    return Ok(false);
+                }
+            }
+
+            let mut is_debugged = FALSE;
+            CheckRemoteDebuggerPresent(handle?, &mut is_debugged)?;
+            if is_debugged == TRUE {
+                return Ok(true);
             } else {
                 return Ok(false);
             }
-        }
-
-        let mut is_debugged = FALSE;
-        CheckRemoteDebuggerPresent(handle?, &mut is_debugged)?;
-        if is_debugged == TRUE {
-            return Ok(true);
-        } else {
-            return Ok(false);
         }
     }
 
     unsafe fn is_manageable(hwnd: &HWND) -> Result<bool> {
-        if IsWindow(*hwnd) == FALSE {
-            return Ok(false);
-        }
-
-        let style = GetWindowLongW(*hwnd, GWL_STYLE) as u32;
-        if has_flag!(style, WS_DISABLED.0) {
-            return Ok(false);
-        }
-
-        let exstyle = GetWindowLongW(*hwnd, GWL_EXSTYLE) as u32;
-        if has_flag!(exstyle, WS_EX_NOACTIVATE.0) {
-            return Ok(false);
-        }
-
-        SetLastError(WIN32_ERROR(0));
-        let name_length = GetWindowTextLengthW(*hwnd);
-        if name_length == 0 {
-            GetLastError()?;
-            return Ok(false);
-        }
-
-        if Self::is_cloaked(hwnd)? {
-            return Ok(false);
-        }
-
-        let mut client_name_buf = [0u16; 256];
-        SetLastError(WIN32_ERROR(0));
-        if GetWindowTextW(*hwnd, client_name_buf.as_mut()) == 0 {
-            if let Err(e) = GetLastError() {
-                println!("Error: failed to get window title - {e}");
-            }
-        }
-        let client_name = PCWSTR::from_raw(client_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
-        if DISALLOWED_TITLE.contains(&client_name) {
-            return Ok(false);
-        }
-
-        let mut class_name_buf = [0u16; 256];
-        SetLastError(WIN32_ERROR(0));
-        if GetClassNameW(*hwnd, class_name_buf.as_mut()) == 0 {
-            if let Err(e) = GetLastError() {
-                println!("Error: failed to get class name - {e}");
-            }
-            return Ok(false);
-        }
-        let class_name = PCWSTR::from_raw(class_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
-        if DISALLOWED_CLASS.contains(&class_name) {
-            return Ok(false);
-        }
-
-        if EXCLUDE_DEBUGGED_WINDOW {
-            if Self::is_debugged(hwnd)? {
+        unsafe {
+            if IsWindow(*hwnd) == FALSE {
                 return Ok(false);
             }
-        }
 
-        let parent = GetParent(*hwnd);
-        let parent_exist = parent.0 != 0;
-        let is_tool = has_flag!(exstyle, WS_EX_TOOLWINDOW.0);
-
-        if !parent_exist {
-            if is_tool {
+            let style = GetWindowLongW(*hwnd, GWL_STYLE) as u32;
+            if has_flag!(style, WS_DISABLED.0) {
                 return Ok(false);
-            } else {
-                let result = IsWindowVisible(*hwnd) == TRUE;
-                return Ok(result);
             }
-        }
 
-        if Self::is_manageable(&parent)? == false {
-            return Ok(false);
-        }
+            let exstyle = GetWindowLongW(*hwnd, GWL_EXSTYLE) as u32;
+            if has_flag!(exstyle, WS_EX_NOACTIVATE.0) {
+                return Ok(false);
+            }
 
-        let is_app = has_flag!(exstyle, WS_EX_APPWINDOW.0);
-        if is_tool || is_app {
-            return Ok(true);
-        }
+            SetLastError(WIN32_ERROR(0));
+            let name_length = GetWindowTextLengthW(*hwnd);
+            if name_length == 0 {
+                GetLastError()?;
+                return Ok(false);
+            }
 
-        Ok(false)
+            if Self::is_cloaked(hwnd)? {
+                return Ok(false);
+            }
+
+            let mut client_name_buf = [0u16; 256];
+            SetLastError(WIN32_ERROR(0));
+            if GetWindowTextW(*hwnd, client_name_buf.as_mut()) == 0 {
+                if let Err(e) = GetLastError() {
+                    println!("Error: failed to get window title - {e}");
+                }
+            }
+            let client_name = PCWSTR::from_raw(client_name_buf.as_ptr())
+                .to_string()
+                .unwrap();
+            if DISALLOWED_TITLE.contains(&client_name) {
+                return Ok(false);
+            }
+
+            let mut class_name_buf = [0u16; 256];
+            SetLastError(WIN32_ERROR(0));
+            if GetClassNameW(*hwnd, class_name_buf.as_mut()) == 0 {
+                if let Err(e) = GetLastError() {
+                    println!("Error: failed to get class name - {e}");
+                }
+                return Ok(false);
+            }
+            let class_name = PCWSTR::from_raw(class_name_buf.as_ptr())
+                .to_string()
+                .unwrap();
+            if DISALLOWED_CLASS.contains(&class_name) {
+                return Ok(false);
+            }
+
+            if EXCLUDE_DEBUGGED_WINDOW {
+                if Self::is_debugged(hwnd)? {
+                    return Ok(false);
+                }
+            }
+
+            let parent = GetParent(*hwnd);
+            let parent_exist = parent.0 != 0;
+            let is_tool = has_flag!(exstyle, WS_EX_TOOLWINDOW.0);
+
+            if !parent_exist {
+                if is_tool {
+                    return Ok(false);
+                } else {
+                    let result = IsWindowVisible(*hwnd) == TRUE;
+                    return Ok(result);
+                }
+            }
+
+            if Self::is_manageable(&parent)? == false {
+                return Ok(false);
+            }
+
+            let is_app = has_flag!(exstyle, WS_EX_APPWINDOW.0);
+            if is_tool || is_app {
+                return Ok(true);
+            }
+
+            Ok(false)
+        }
     }
 
     unsafe fn get_root(hwnd: &HWND) -> Result<HWND> {
-        let desktop_window = GetDesktopWindow();
-        let mut current = hwnd.clone();
-        let mut parent = GetWindow(current, GW_OWNER);
+        unsafe {
+            let desktop_window = GetDesktopWindow();
+            let mut current = hwnd.clone();
+            let mut parent = GetWindow(current, GW_OWNER);
 
-        while (parent.0 != 0) && (parent != desktop_window) {
-            current = parent;
-            parent = GetWindow(current, GW_OWNER);
+            while (parent.0 != 0) && (parent != desktop_window) {
+                current = parent;
+                parent = GetWindow(current, GW_OWNER);
+            }
+
+            Ok(current)
         }
-
-        Ok(current)
     }
 
     unsafe fn manage(&mut self, hwnd: &HWND) -> Result<Client> {
-        for monitor in self.monitors.iter() {
-            if let Some(client_index) = monitor.find_client_index(hwnd) {
-                return Ok(monitor.clients[client_index].clone());
-            }
-        }
-
-        let mut window_info = WINDOWINFO {
-            cbSize: size_of::<WINDOWINFO>() as u32,
-            ..Default::default()
-        };
-
-        GetWindowInfo(*hwnd, &mut window_info)?;
-
-        let parent = GetParent(*hwnd);
-        let root = Self::get_root(hwnd)?;
-        let is_cloaked = Self::is_cloaked(hwnd)?;
-        let is_minimized = IsIconic(*hwnd) == TRUE;
-        let rect = Rect::from_win_rect(&window_info.rcWindow);
-        let center_x = rect.x + rect.width / 2;
-        let center_y = rect.y + rect.height / 2;
-
-        assert!(!self.monitors.is_empty());
-
-        let mut monitor_index: usize = 0;
-        for (index, monitor_iter) in self.monitors.iter().enumerate() {
-            if monitor_iter.is_in_monitor(center_x, center_y) {
-                monitor_index = index;
-            }
-        }
-
-        let mut client_name_buf = [0u16; 256];
-        SetLastError(WIN32_ERROR(0));
-        if GetWindowTextW(*hwnd, client_name_buf.as_mut()) == 0 {
-            if let Err(e) = GetLastError() {
-                println!("Error: failed to get window title - {e}");
-            }
-        }
-        let title = PCWSTR::from_raw(client_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
-
-        let mut class_name_buf = [0u16; 256];
-        SetLastError(WIN32_ERROR(0));
-        if GetClassNameW(*hwnd, class_name_buf.as_mut()) == 0 {
-            if let Err(e) = GetLastError() {
-                println!("Error: failed to get class name - {e}");
-            }
-        }
-        let class = PCWSTR::from_raw(class_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
-
-        let get_processname = || -> Result<String> {
-            let mut process_id: u32 = 0;
-            if GetWindowThreadProcessId(*hwnd, Some(&mut process_id as *mut _)) == 0 {
-                if let Err(e) = GetLastError() {
-                    println!("Error: Failed to get process id - {}", e);
-                    return Err(e);
-                }
-                return Ok(String::default());
-            }
-
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
-            if let Err(e) = handle {
-                println!("Error: Failed to open process handle - {}", e);
-                return Err(e);
-            }
-
-            let handle = handle.unwrap();
-            let mut file_name_buf = [0u16; 256];
-            if GetProcessImageFileNameW(handle, &mut file_name_buf) == 0 {
-                if let Err(e) = GetLastError() {
-                    println!("Error: Failed to get file name - {}", e);
+        unsafe {
+            for monitor in self.monitors.iter() {
+                if let Some(client_index) = monitor.find_client_index(hwnd) {
+                    return Ok(monitor.clients[client_index].clone());
                 }
             }
-            let file_name = PCWSTR::from_raw(file_name_buf.as_ptr())
+
+            let mut window_info = WINDOWINFO {
+                cbSize: size_of::<WINDOWINFO>() as u32,
+                ..Default::default()
+            };
+
+            GetWindowInfo(*hwnd, &mut window_info)?;
+
+            let parent = GetParent(*hwnd);
+            let root = Self::get_root(hwnd)?;
+            let is_cloaked = Self::is_cloaked(hwnd)?;
+            let is_minimized = IsIconic(*hwnd) == TRUE;
+            let rect = Rect::from_win_rect(&window_info.rcWindow);
+            let center_x = rect.x + rect.width / 2;
+            let center_y = rect.y + rect.height / 2;
+
+            assert!(!self.monitors.is_empty());
+
+            let mut monitor_index: usize = 0;
+            for (index, monitor_iter) in self.monitors.iter().enumerate() {
+                if monitor_iter.is_in_monitor(center_x, center_y) {
+                    monitor_index = index;
+                }
+            }
+
+            let mut client_name_buf = [0u16; 256];
+            SetLastError(WIN32_ERROR(0));
+            if GetWindowTextW(*hwnd, client_name_buf.as_mut()) == 0 {
+                if let Err(e) = GetLastError() {
+                    println!("Error: failed to get window title - {e}");
+                }
+            }
+            let title = PCWSTR::from_raw(client_name_buf.as_ptr())
                 .to_string()
                 .unwrap();
-            CloseHandle(handle)?;
-            return Ok(file_name);
-        };
 
-        let process_filename = get_processname().unwrap_or_default();
-        let monitor_tag_index = self.monitors[monitor_index].selected_tag_index;
-
-        let mut client = Client {
-            hwnd: *hwnd,
-            title,
-            class,
-            process_filename,
-            parent,
-            root,
-            rect: rect.into(),
-            bw: 0,
-            is_minimized,
-            is_cloaked,
-            monitor: monitor_index,
-            tags: DEFAULT_TAGS,
-            ..Default::default()
-        };
-
-        for rule in RULES.iter() {
-            if rule.is_match(&client) {
-                client.is_floating = rule.is_floating;
-                client.tags = rule.tags;
-                break;
+            let mut class_name_buf = [0u16; 256];
+            SetLastError(WIN32_ERROR(0));
+            if GetClassNameW(*hwnd, class_name_buf.as_mut()) == 0 {
+                if let Err(e) = GetLastError() {
+                    println!("Error: failed to get class name - {e}");
+                }
             }
+            let class = PCWSTR::from_raw(class_name_buf.as_ptr())
+                .to_string()
+                .unwrap();
+
+            let get_processname = || -> Result<String> {
+                let mut process_id: u32 = 0;
+                if GetWindowThreadProcessId(*hwnd, Some(&mut process_id as *mut _)) == 0 {
+                    if let Err(e) = GetLastError() {
+                        println!("Error: Failed to get process id - {}", e);
+                        return Err(e);
+                    }
+                    return Ok(String::default());
+                }
+
+                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, process_id);
+                if let Err(e) = handle {
+                    println!("Error: Failed to open process handle - {}", e);
+                    return Err(e);
+                }
+
+                let handle = handle.unwrap();
+                let mut file_name_buf = [0u16; 256];
+                if GetProcessImageFileNameW(handle, &mut file_name_buf) == 0 {
+                    if let Err(e) = GetLastError() {
+                        println!("Error: Failed to get file name - {}", e);
+                    }
+                }
+                let file_name = PCWSTR::from_raw(file_name_buf.as_ptr())
+                    .to_string()
+                    .unwrap();
+                CloseHandle(handle)?;
+                return Ok(file_name);
+            };
+
+            let process_filename = get_processname().unwrap_or_default();
+            let monitor_tag_index = self.monitors[monitor_index].selected_tag_index;
+
+            let mut client = Client {
+                hwnd: *hwnd,
+                title,
+                class,
+                process_filename,
+                parent,
+                root,
+                rect: rect.into(),
+                bw: 0,
+                is_minimized,
+                is_cloaked,
+                monitor: monitor_index,
+                tags: DEFAULT_TAGS,
+                ..Default::default()
+            };
+
+            for rule in RULES.iter() {
+                if rule.is_match(&client) {
+                    client.is_floating = rule.is_floating;
+                    client.tags = rule.tags;
+                    break;
+                }
+            }
+
+            let prev_monitor_tags = self.monitors[monitor_index].tagset[monitor_tag_index];
+            self.monitors[monitor_index].tagset[monitor_tag_index] =
+                client.tags | prev_monitor_tags;
+            self.monitors[monitor_index].clients.push(client.clone());
+
+            Ok(client)
         }
-
-        let prev_monitor_tags = self.monitors[monitor_index].tagset[monitor_tag_index];
-        self.monitors[monitor_index].tagset[monitor_tag_index] = client.tags | prev_monitor_tags;
-        self.monitors[monitor_index].clients.push(client.clone());
-
-        Ok(client)
     }
 
     unsafe fn unmanage(&mut self, hwnd: &HWND) -> Result<()> {
-        for monitor in self.monitors.iter_mut() {
-            let found_index = monitor.find_client_index(hwnd);
+        unsafe {
+            for monitor in self.monitors.iter_mut() {
+                let found_index = monitor.find_client_index(hwnd);
 
-            if let Some(index) = found_index {
-                monitor.clients.remove(index);
-                monitor.arrangemon()?;
-                return Ok(());
+                if let Some(index) = found_index {
+                    monitor.clients.remove(index);
+                    monitor.arrangemon()?;
+                    return Ok(());
+                }
             }
-        }
 
-        Ok(())
+            Ok(())
+        }
     }
 
     pub unsafe fn arrange(&mut self) -> Result<()> {
         for monitor in self.monitors.iter_mut() {
-            monitor.arrangemon()?;
+            unsafe { monitor.arrangemon() }?;
         }
 
         Ok(())
     }
 
     pub unsafe fn cleanup(&mut self) -> Result<()> {
-        for event_hook in self.event_hook.iter() {
-            if event_hook.0 != 0 {
-                UnhookWinEvent(*event_hook);
+        unsafe {
+            for event_hook in self.event_hook.iter() {
+                if event_hook.0 != 0 {
+                    UnhookWinEvent(*event_hook);
+                }
             }
-        }
-        self.event_hook.clear();
+            self.event_hook.clear();
 
-        let monitors = &self.monitors;
-        for monitor in monitors.iter() {
-            for client in monitor.clients.iter() {
-                ShowWindow(client.hwnd, SW_RESTORE);
+            let monitors = &self.monitors;
+            for monitor in monitors.iter() {
+                for client in monitor.clients.iter() {
+                    ShowWindow(client.hwnd, SW_RESTORE);
+                }
             }
+
+            if self.mouse_hook.is_some() {
+                let _ = UnhookWindowsHookEx(self.mouse_hook.unwrap());
+                self.mouse_hook = None;
+            }
+
+            if self.hwnd.0 == 0 {
+                return Ok(());
+            }
+
+            let tag_keys_len = TAG_KEYS.len() * TAG_KEYS.first().unwrap().len();
+            for key_index in 0..(KEYS.len() + tag_keys_len) {
+                UnregisterHotKey(self.hwnd, key_index as i32)?;
+            }
+
+            self.hwnd = HWND::default();
+
+            Ok(())
         }
-
-        if self.mouse_hook.is_some() {
-            let _ = UnhookWindowsHookEx(self.mouse_hook.unwrap());
-            self.mouse_hook = None;
-        }
-
-        if self.hwnd.0 == 0 {
-            return Ok(());
-        }
-
-        let tag_keys_len = TAG_KEYS.len() * TAG_KEYS.first().unwrap().len();
-        for key_index in 0..(KEYS.len() + tag_keys_len) {
-            UnregisterHotKey(self.hwnd, key_index as i32)?;
-        }
-
-        self.hwnd = HWND::default();
-
-        Ok(())
     }
 
     pub unsafe fn run() -> Result<()> {
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0) == TRUE {
-            TranslateMessage(&mut msg);
-            DispatchMessageW(&mut msg);
+        unsafe {
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0) == TRUE {
+                TranslateMessage(&mut msg);
+                DispatchMessageW(&mut msg);
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     pub unsafe fn view(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
+
+            let selected_tag = arg.as_ref().unwrap().ui;
+
+            let monitor_index = self.selected_monitor_index.unwrap();
+            let monitor = &mut self.monitors[monitor_index];
+            if (selected_tag & TAGMASK) == monitor.tagset[monitor.selected_tag_index] {
+                return Ok(());
+            }
+
+            self.all_unminimize(arg)?;
+
+            let monitor = &mut self.monitors[monitor_index];
+            monitor.selected_tag_index ^= 1;
+            if (selected_tag & TAGMASK) != 0 {
+                monitor.tagset[monitor.selected_tag_index] = selected_tag & TAGMASK;
+            }
+            monitor.update_bar(monitor.bar.is_selected_monitor);
+            self.refresh_focus()?;
+            self.arrange()?;
+            self.refresh_bar()?;
+            Ok(())
         }
-
-        let selected_tag = arg.as_ref().unwrap().ui;
-
-        let monitor_index = self.selected_monitor_index.unwrap();
-        let monitor = &mut self.monitors[monitor_index];
-        if (selected_tag & TAGMASK) == monitor.tagset[monitor.selected_tag_index] {
-            return Ok(());
-        }
-
-        self.all_unminimize(arg)?;
-
-        let monitor = &mut self.monitors[monitor_index];
-        monitor.selected_tag_index ^= 1;
-        if (selected_tag & TAGMASK) != 0 {
-            monitor.tagset[monitor.selected_tag_index] = selected_tag & TAGMASK;
-        }
-        monitor.update_bar(monitor.bar.is_selected_monitor);
-        self.refresh_focus()?;
-        self.arrange()?;
-        self.refresh_bar()?;
-        Ok(())
     }
 
     pub unsafe fn toggle_view(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
+
+            let selected_tag = arg.as_ref().unwrap().ui;
+
+            let monitor_index = self.selected_monitor_index.unwrap();
+            let monitor = &mut self.monitors[monitor_index];
+            let new_tag_set = (selected_tag & TAGMASK) ^ monitor.tagset[monitor.selected_tag_index];
+
+            if new_tag_set == 0 {
+                return Ok(());
+            }
+
+            self.all_unminimize(arg)?;
+
+            let monitor = &mut self.monitors[monitor_index];
+            monitor.tagset[monitor.selected_tag_index] = new_tag_set;
+            monitor.update_bar(monitor.bar.is_selected_monitor);
+            self.refresh_focus()?;
+            self.arrange()?;
+            self.refresh_bar()?;
+            Ok(())
         }
-
-        let selected_tag = arg.as_ref().unwrap().ui;
-
-        let monitor_index = self.selected_monitor_index.unwrap();
-        let monitor = &mut self.monitors[monitor_index];
-        let new_tag_set = (selected_tag & TAGMASK) ^ monitor.tagset[monitor.selected_tag_index];
-
-        if new_tag_set == 0 {
-            return Ok(());
-        }
-
-        self.all_unminimize(arg)?;
-
-        let monitor = &mut self.monitors[monitor_index];
-        monitor.tagset[monitor.selected_tag_index] = new_tag_set;
-        monitor.update_bar(monitor.bar.is_selected_monitor);
-        self.refresh_focus()?;
-        self.arrange()?;
-        self.refresh_bar()?;
-        Ok(())
     }
 
     pub unsafe fn tag(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
-        }
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
 
-        let selected_tag = arg.as_ref().unwrap().ui & TAGMASK;
-        if selected_tag == 0 {
-            return Ok(());
-        }
+            let selected_tag = arg.as_ref().unwrap().ui & TAGMASK;
+            if selected_tag == 0 {
+                return Ok(());
+            }
 
-        let monitor_index = self.selected_monitor_index.unwrap();
-        let monitor = &mut self.monitors[monitor_index];
-        let selected_client_index = monitor.get_selected_client_index();
-        if selected_client_index.is_none() {
-            return Ok(());
-        }
+            let monitor_index = self.selected_monitor_index.unwrap();
+            let monitor = &mut self.monitors[monitor_index];
+            let selected_client_index = monitor.get_selected_client_index();
+            if selected_client_index.is_none() {
+                return Ok(());
+            }
 
-        monitor.clients[selected_client_index.unwrap()].tags = selected_tag;
-        self.refresh_focus()?;
-        self.arrange()?;
-        self.refresh_bar()?;
-        Ok(())
+            monitor.clients[selected_client_index.unwrap()].tags = selected_tag;
+            self.refresh_focus()?;
+            self.arrange()?;
+            self.refresh_bar()?;
+            Ok(())
+        }
     }
 
     pub unsafe fn toggle_tag(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
-        }
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
 
-        let monitor_index = self.selected_monitor_index.unwrap();
-        let monitor = &mut self.monitors[monitor_index];
-        let selected_client_index = monitor.get_selected_client_index();
-        if selected_client_index.is_none() {
-            return Ok(());
-        }
+            let monitor_index = self.selected_monitor_index.unwrap();
+            let monitor = &mut self.monitors[monitor_index];
+            let selected_client_index = monitor.get_selected_client_index();
+            if selected_client_index.is_none() {
+                return Ok(());
+            }
 
-        let selected_tag = arg.as_ref().unwrap().ui & TAGMASK;
-        let new_tags = monitor.clients[selected_client_index.unwrap()].tags ^ selected_tag;
-        if new_tags == 0 {
-            return Ok(());
-        }
+            let selected_tag = arg.as_ref().unwrap().ui & TAGMASK;
+            let new_tags = monitor.clients[selected_client_index.unwrap()].tags ^ selected_tag;
+            if new_tags == 0 {
+                return Ok(());
+            }
 
-        let monitor = &mut self.monitors[monitor_index];
-        monitor.clients[selected_client_index.unwrap()].tags = new_tags;
-        self.refresh_focus()?;
-        self.arrange()?;
-        self.refresh_bar()?;
-        Ok(())
+            let monitor = &mut self.monitors[monitor_index];
+            monitor.clients[selected_client_index.unwrap()].tags = new_tags;
+            self.refresh_focus()?;
+            self.arrange()?;
+            self.refresh_bar()?;
+            Ok(())
+        }
     }
 
     pub unsafe fn tag_all(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
-        }
-
-        let selected_tag = arg.as_ref().unwrap().ui & TAGMASK;
-        if selected_tag == 0 {
-            return Ok(());
-        }
-
-        let monitor_index = self.selected_monitor_index.unwrap();
-        let monitor = &mut self.monitors[monitor_index];
-        let monitor_visible_tag = monitor.tagset[monitor.selected_tag_index];
-
-        for client in monitor.clients.iter_mut() {
-            if Monitor::is_visible(client, monitor_visible_tag) {
-                client.tags = selected_tag;
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
             }
-        }
 
-        self.refresh_focus()?;
-        self.arrange()?;
-        self.refresh_bar()?;
-        Ok(())
+            let selected_tag = arg.as_ref().unwrap().ui & TAGMASK;
+            if selected_tag == 0 {
+                return Ok(());
+            }
+
+            let monitor_index = self.selected_monitor_index.unwrap();
+            let monitor = &mut self.monitors[monitor_index];
+            let monitor_visible_tag = monitor.tagset[monitor.selected_tag_index];
+
+            for client in monitor.clients.iter_mut() {
+                if Monitor::is_visible(client, monitor_visible_tag) {
+                    client.tags = selected_tag;
+                }
+            }
+
+            self.refresh_focus()?;
+            self.arrange()?;
+            self.refresh_bar()?;
+            Ok(())
+        }
     }
 
     pub unsafe fn quit(&mut self, _: &Option<Arg>) -> Result<()> {
-        if self.hwnd.0 == 0 {
-            return Ok(());
-        }
+        unsafe {
+            if self.hwnd.0 == 0 {
+                return Ok(());
+            }
 
-        PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0))?;
-        Ok(())
+            PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0))?;
+            Ok(())
+        }
     }
 
     fn offset_to_new_index(length: usize, current_index: usize, offset_index: i32) -> usize {
@@ -2125,207 +2225,226 @@ impl DwmrApp {
     }
 
     unsafe fn focus(hwnd: &HWND) -> Result<()> {
-        let result = SetForegroundWindow(*hwnd);
-        if result.0 == 0 {
-            GetLastError()?;
+        unsafe {
+            let result = SetForegroundWindow(*hwnd);
+            if result.0 == 0 {
+                GetLastError()?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 
     pub unsafe fn focus_stack(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
-        }
-
-        let offset = arg.as_ref().unwrap().i;
-
-        if offset == 0 {
-            return Ok(());
-        }
-
-        let selected_monitor = self
-            .monitors
-            .get_mut(self.selected_monitor_index.unwrap())
-            .unwrap();
-        let selected_client_index_option = selected_monitor.get_selected_client_index();
-
-        if selected_client_index_option.is_none() {
-            return Ok(());
-        }
-
-        let selected_client_index = selected_client_index_option.unwrap();
-        let clients_count = selected_monitor.visible_clinets_count();
-        if clients_count == 0 {
-            return Ok(());
-        }
-
-        let mut new_focus_index = selected_client_index as i32;
-        let mut left_offset = -offset;
-        let clients_count = selected_monitor.clients.len() as i32;
-        let step = if offset < 0 { 1 } else { -1 };
-        let selected_tag = selected_monitor.tagset[selected_monitor.selected_tag_index];
-        while left_offset != 0 {
-            left_offset -= step;
-            new_focus_index += step;
-            new_focus_index %= clients_count;
-            new_focus_index += clients_count * (new_focus_index < 0) as i32;
-
-            while (!Monitor::is_visible(
-                &selected_monitor.clients[new_focus_index as usize],
-                selected_tag,
-            )) || selected_monitor.clients[new_focus_index as usize].is_minimized
-            {
-                new_focus_index += step;
-                new_focus_index %= clients_count as i32;
-                new_focus_index += clients_count * (new_focus_index < 0) as i32;
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
             }
-        }
 
-        if new_focus_index == (selected_client_index as i32) {
-            return Ok(());
-        }
+            let offset = arg.as_ref().unwrap().i;
 
-        let new_focus_hwnd = selected_monitor.clients[new_focus_index as usize].hwnd;
-        selected_monitor.selected_hwnd = new_focus_hwnd;
-        Self::focus(&new_focus_hwnd)?;
-        Ok(())
+            if offset == 0 {
+                return Ok(());
+            }
+
+            let selected_monitor = self
+                .monitors
+                .get_mut(self.selected_monitor_index.unwrap())
+                .unwrap();
+            let selected_client_index_option = selected_monitor.get_selected_client_index();
+
+            if selected_client_index_option.is_none() {
+                return Ok(());
+            }
+
+            let selected_client_index = selected_client_index_option.unwrap();
+            let clients_count = selected_monitor.visible_clinets_count();
+            if clients_count == 0 {
+                return Ok(());
+            }
+
+            let mut new_focus_index = selected_client_index as i32;
+            let mut left_offset = -offset;
+            let clients_count = selected_monitor.clients.len() as i32;
+            let step = if offset < 0 { 1 } else { -1 };
+            let selected_tag = selected_monitor.tagset[selected_monitor.selected_tag_index];
+            while left_offset != 0 {
+                left_offset -= step;
+                new_focus_index += step;
+                new_focus_index %= clients_count;
+                new_focus_index += clients_count * (new_focus_index < 0) as i32;
+
+                while (!Monitor::is_visible(
+                    &selected_monitor.clients[new_focus_index as usize],
+                    selected_tag,
+                )) || selected_monitor.clients[new_focus_index as usize].is_minimized
+                {
+                    new_focus_index += step;
+                    new_focus_index %= clients_count as i32;
+                    new_focus_index += clients_count * (new_focus_index < 0) as i32;
+                }
+            }
+
+            if new_focus_index == (selected_client_index as i32) {
+                return Ok(());
+            }
+
+            let new_focus_hwnd = selected_monitor.clients[new_focus_index as usize].hwnd;
+            selected_monitor.selected_hwnd = new_focus_hwnd;
+            Self::focus(&new_focus_hwnd)?;
+            Ok(())
+        }
     }
 
     pub unsafe fn zoom(&mut self, _: &Option<Arg>) -> Result<()> {
-        let selected_monitor = self
-            .monitors
-            .get_mut(self.selected_monitor_index.unwrap())
-            .unwrap();
-        let selected_client_index_option = selected_monitor.get_selected_client_index();
+        unsafe {
+            let selected_monitor = self
+                .monitors
+                .get_mut(self.selected_monitor_index.unwrap())
+                .unwrap();
+            let selected_client_index_option = selected_monitor.get_selected_client_index();
 
-        if selected_client_index_option.is_none() {
-            return Ok(());
+            if selected_client_index_option.is_none() {
+                return Ok(());
+            }
+
+            let selected_client_idnex = selected_client_index_option.unwrap();
+
+            let clients = &mut selected_monitor.clients;
+            let selected_client = clients[selected_client_idnex].clone();
+            clients.remove(selected_client_idnex);
+            clients.push(selected_client);
+
+            selected_monitor.arrangemon()?;
+
+            Ok(())
         }
-
-        let selected_client_idnex = selected_client_index_option.unwrap();
-
-        let clients = &mut selected_monitor.clients;
-        let selected_client = clients[selected_client_idnex].clone();
-        clients.remove(selected_client_idnex);
-        clients.push(selected_client);
-
-        selected_monitor.arrangemon()?;
-
-        Ok(())
     }
 
     unsafe fn unfocus() -> Result<()> {
-        let desktop_hwnd = FindWindowW(W_WALLPAPER_CLASS_NAME, None);
-        if desktop_hwnd.0 == 0 {
-            GetLastError()?;
-        }
+        unsafe {
+            let desktop_hwnd = FindWindowW(W_WALLPAPER_CLASS_NAME, None);
+            if desktop_hwnd.0 == 0 {
+                GetLastError()?;
+            }
 
-        let result = SetForegroundWindow(desktop_hwnd);
-        if result.0 == 0 {
-            GetLastError()?;
-        }
+            let result = SetForegroundWindow(desktop_hwnd);
+            if result.0 == 0 {
+                GetLastError()?;
+            }
 
-        Ok(())
+            Ok(())
+        }
     }
 
     unsafe fn refresh_focus(&self) -> Result<()> {
-        let selected_monitor = &self.monitors[self.selected_monitor_index.unwrap()];
-        if selected_monitor.clients.len() == 0 {
-            Self::unfocus()?;
-            return Ok(());
+        unsafe {
+            let selected_monitor = &self.monitors[self.selected_monitor_index.unwrap()];
+            if selected_monitor.clients.len() == 0 {
+                Self::unfocus()?;
+                return Ok(());
+            }
+
+            let mut selected_client_option = selected_monitor.get_selected_client_index();
+            if selected_client_option.is_none() && selected_monitor.clients.len() > 0 {
+                selected_client_option = Some(selected_monitor.clients.len() - 1);
+            }
+
+            let selected_client_hwnd =
+                selected_monitor.clients[selected_client_option.unwrap()].hwnd;
+            Self::focus(&selected_client_hwnd)?;
+
+            Ok(())
         }
-
-        let mut selected_client_option = selected_monitor.get_selected_client_index();
-        if selected_client_option.is_none() && selected_monitor.clients.len() > 0 {
-            selected_client_option = Some(selected_monitor.clients.len() - 1);
-        }
-
-        let selected_client_hwnd = selected_monitor.clients[selected_client_option.unwrap()].hwnd;
-        Self::focus(&selected_client_hwnd)?;
-
-        Ok(())
     }
 
     pub unsafe fn focus_monitor(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if self.monitors.len() == 0 {
-            return Ok(());
-        }
-
-        if arg.is_none() {
-            return Ok(());
-        }
-
-        let index_offset = arg.as_ref().unwrap().i;
-
-        if index_offset == 0 {
-            return Ok(());
-        }
-
-        if self.selected_monitor_index.is_none() {
-            self.selected_monitor_index = Some(0);
-        } else {
-            let current_selected_index = self.selected_monitor_index.unwrap();
-            let new_index = Self::offset_to_new_index(
-                self.monitors.len(),
-                current_selected_index,
-                index_offset,
-            );
-            if new_index == current_selected_index {
+        unsafe {
+            if self.monitors.len() == 0 {
                 return Ok(());
             }
-            self.selected_monitor_index = Some(new_index);
-        }
 
-        let selected_monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
-        let selected_hwnd = &mut selected_monitor.selected_hwnd;
-        if selected_hwnd.0 == 0 {
-            let clients = &selected_monitor.clients;
-            *selected_hwnd = match clients.last() {
-                Some(client) => client.hwnd,
-                None => HWND::default(),
-            };
-        }
+            if arg.is_none() {
+                return Ok(());
+            }
 
-        self.refresh_focus()?;
-        self.refresh_bar()?;
-        Ok(())
+            let index_offset = arg.as_ref().unwrap().i;
+
+            if index_offset == 0 {
+                return Ok(());
+            }
+
+            if self.selected_monitor_index.is_none() {
+                self.selected_monitor_index = Some(0);
+            } else {
+                let current_selected_index = self.selected_monitor_index.unwrap();
+                let new_index = Self::offset_to_new_index(
+                    self.monitors.len(),
+                    current_selected_index,
+                    index_offset,
+                );
+                if new_index == current_selected_index {
+                    return Ok(());
+                }
+                self.selected_monitor_index = Some(new_index);
+            }
+
+            let selected_monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
+            let selected_hwnd = &mut selected_monitor.selected_hwnd;
+            if selected_hwnd.0 == 0 {
+                let clients = &selected_monitor.clients;
+                *selected_hwnd = match clients.last() {
+                    Some(client) => client.hwnd,
+                    None => HWND::default(),
+                };
+            }
+
+            self.refresh_focus()?;
+            self.refresh_bar()?;
+            Ok(())
+        }
     }
 
     pub unsafe fn set_layout(&mut self, arg: &Option<Arg>) -> Result<()> {
-        if arg.is_none() {
-            return Ok(());
-        }
+        unsafe {
+            if arg.is_none() {
+                return Ok(());
+            }
 
-        let monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
-        monitor.layout = arg.as_ref().unwrap().l;
-        monitor.arrangemon()?;
-        self.refresh_focus()?;
-        Ok(())
+            let monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
+            monitor.layout = arg.as_ref().unwrap().l;
+            monitor.arrangemon()?;
+            self.refresh_focus()?;
+            Ok(())
+        }
     }
 
     pub unsafe fn toggle_float(&mut self, _arg: &Option<Arg>) -> Result<()> {
-        let selected_monitor = &self.monitors[self.selected_monitor_index.unwrap()];
-        let selected_index = selected_monitor.get_selected_client_index();
-        if selected_index.is_none() {
-            return Ok(());
-        }
+        unsafe {
+            let selected_monitor = &self.monitors[self.selected_monitor_index.unwrap()];
+            let selected_index = selected_monitor.get_selected_client_index();
+            if selected_index.is_none() {
+                return Ok(());
+            }
 
-        let selected_client = &mut self.monitors[self.selected_monitor_index.unwrap()].clients
-            [selected_index.unwrap()];
-        selected_client.is_floating = !selected_client.is_floating;
-        self.arrange()?;
-        self.refresh_focus()?;
-        Ok(())
+            let selected_client = &mut self.monitors[self.selected_monitor_index.unwrap()].clients
+                [selected_index.unwrap()];
+            selected_client.is_floating = !selected_client.is_floating;
+            self.arrange()?;
+            self.refresh_focus()?;
+            Ok(())
+        }
     }
 
     pub unsafe fn force_reset(&mut self, _arg: &Option<Arg>) -> Result<()> {
-        SendMessageW(
-            self.hwnd,
-            WM_UPDATE_DISPLAY,
-            WPARAM::default(),
-            LPARAM::default(),
-        );
-        Ok(())
+        unsafe {
+            SendMessageW(
+                self.hwnd,
+                WM_UPDATE_DISPLAY,
+                WPARAM::default(),
+                LPARAM::default(),
+            );
+            Ok(())
+        }
     }
 
     pub fn export_clients_tags(&self) -> HashMap<isize, u32> {
@@ -2349,47 +2468,53 @@ impl DwmrApp {
     }
 
     pub unsafe fn minimize(&mut self, hwnd: &HWND) -> Result<()> {
-        for monitor in self.monitors.iter_mut() {
-            for client in monitor.clients.iter_mut() {
-                if client.hwnd == *hwnd {
-                    client.is_minimized = true;
-                    monitor.arrangemon()?;
-                    return Ok(());
+        unsafe {
+            for monitor in self.monitors.iter_mut() {
+                for client in monitor.clients.iter_mut() {
+                    if client.hwnd == *hwnd {
+                        client.is_minimized = true;
+                        monitor.arrangemon()?;
+                        return Ok(());
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        }
     }
 
     pub unsafe fn unminimize(&mut self, hwnd: &HWND) -> Result<()> {
-        for monitor in self.monitors.iter_mut() {
-            for client in monitor.clients.iter_mut() {
-                if client.hwnd == *hwnd {
-                    client.is_minimized = false;
-                    monitor.arrangemon()?;
-                    return Ok(());
+        unsafe {
+            for monitor in self.monitors.iter_mut() {
+                for client in monitor.clients.iter_mut() {
+                    if client.hwnd == *hwnd {
+                        client.is_minimized = false;
+                        monitor.arrangemon()?;
+                        return Ok(());
+                    }
                 }
             }
-        }
 
-        Ok(())
+            Ok(())
+        }
     }
 
     pub unsafe fn all_unminimize(&mut self, _arg: &Option<Arg>) -> Result<()> {
-        if self.selected_monitor_index.is_none() {
-            return Ok(());
-        }
-
-        let monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
-        let selected_tag_index = monitor.selected_tag_index;
-        for client in monitor.clients.iter_mut() {
-            if Monitor::is_visible(client, monitor.tagset[selected_tag_index]) {
-                client.is_minimized = false;
+        unsafe {
+            if self.selected_monitor_index.is_none() {
+                return Ok(());
             }
-        }
 
-        monitor.arrangemon()?;
-        Ok(())
+            let monitor = &mut self.monitors[self.selected_monitor_index.unwrap()];
+            let selected_tag_index = monitor.selected_tag_index;
+            for client in monitor.clients.iter_mut() {
+                if Monitor::is_visible(client, monitor.tagset[selected_tag_index]) {
+                    client.is_minimized = false;
+                }
+            }
+
+            monitor.arrangemon()?;
+            Ok(())
+        }
     }
 }
