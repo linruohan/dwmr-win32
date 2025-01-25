@@ -61,7 +61,7 @@ dwmr-win32 offers a variety of keybindings to efficiently manage windows, worksp
 - **ALT + I/D**: Increase/decrease the size of the master area.
 
 ### Application
-- **ALT + Q**: Quit dwmr-win32.
+- **ALT + SHIFT+ Q**: Quit dwmr-win32.
 - **ALT + Z**: Zoom (toggle the master area between the active window and the previous one).
 
 These keybindings are defined in the `src/config.rs` file and can be customized to suit your preferences.
