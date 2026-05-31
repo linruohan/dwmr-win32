@@ -5,11 +5,12 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
-const-default = {version = "1.0", features = ["derive"]}
-lazy_static = "1.4.0"
+const-default = { version = "1.0", features = ["derive"] }
+lazy_static = "1.5.0"
+windows-numerics = "0.3"
 
 [dependencies.windows]
-version = "0.52"
+version = "0.62.2"
 features = [
 	"Foundation_Numerics",
 	"Win32_Foundation",
@@ -29,4 +30,3 @@ features = [
 	"Win32_Graphics_Dwm",
 	"Win32_Graphics_DirectWrite",
 ]
-
