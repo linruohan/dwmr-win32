@@ -812,7 +812,7 @@ impl Rule {
 pub struct DwmrApp {
     hwnd: HWND,
     wallpaper_hwnd: HWND,
-    monitors: Vec<Monitor>,
+    monitors: Vec<Box<Monitor>>,
     selected_monitor_index: Option<usize>,
     event_hook: Vec<HWINEVENTHOOK>,
     mouse_hook: Option<HHOOK>,
@@ -1009,7 +1009,7 @@ impl DwmrApp {
                 LRESULT::default()
             }
             WM_DESTROY => {
-                self.cleanup().unwrap();
+                let _ = self.cleanup();
                 PostQuitMessage(0);
                 LRESULT::default()
             }
@@ -1019,24 +1019,28 @@ impl DwmrApp {
                 let tag_keys_len = TAG_KEYS.len() * tag_keys_sub_len;
                 if wparam.0 < KEYS.len() {
                     let key = &KEYS[wparam.0];
-                    (key.func)(self, &key.arg).unwrap();
+                    if let Err(e) = (key.func)(self, &key.arg) {
+                        eprintln!("警告: 执行快捷键 {} 失败 - {:?}", wparam.0, e);
+                    }
                 } else if wparam.0 < KEYS.len() + tag_keys_len {
                     let tag_key_index = wparam.0 - KEYS.len();
                     let tag_key_first_index = tag_key_index / tag_keys_sub_len;
                     let tag_key_second_index = tag_key_index % tag_keys_sub_len;
                     let key = &TAG_KEYS[tag_key_first_index][tag_key_second_index];
-                    (key.func)(self, &key.arg).unwrap();
+                    if let Err(e) = (key.func)(self, &key.arg) {
+                        eprintln!("警告: 执行标签快捷键失败 - {:?}", e);
+                    }
                 }
                 LRESULT::default()
             }
             WM_UPDATE_DISPLAY => {
                 println!("refresh display");
                 let clients_tags = self.export_clients_tags();
-                self.request_update_geom().unwrap();
-                self.scan().unwrap();
+                let _ = self.request_update_geom();
+                let _ = self.scan();
                 self.import_clients_tags(clients_tags);
-                self.arrange().unwrap();
-                self.refresh_bar().unwrap();
+                let _ = self.arrange();
+                let _ = self.refresh_bar();
                 LRESULT::default()
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -1075,6 +1079,10 @@ impl DwmrApp {
         );
     }
 
+    /// <summary>
+    /// 窗口事件处理函数，处理各种窗口事件（焦点变化、显示/隐藏、最小化等）
+    /// 使用安全的错误处理，避免 unwrap 导致 panic 和程序崩溃
+    /// </summary>
     unsafe fn window_event_hook(
         &mut self,
         _hwin_event_hook: HWINEVENTHOOK,
@@ -1096,18 +1104,20 @@ impl DwmrApp {
 
         let mut client_name_buf = [0u16; 256];
         GetWindowTextW(hwnd, client_name_buf.as_mut());
-        let client_name = PCWSTR::from_raw(client_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
+        let client_name = match PCWSTR::from_raw(client_name_buf.as_ptr()).to_string() {
+            Ok(name) => name,
+            Err(_) => return,
+        };
 
         let mut class_name_buf = [0u16; 256];
         if GetClassNameW(hwnd, class_name_buf.as_mut()) == 0 {
             SetLastError(WIN32_ERROR(0));
             return;
         }
-        let class_name = PCWSTR::from_raw(class_name_buf.as_ptr())
-            .to_string()
-            .unwrap();
+        let class_name = match PCWSTR::from_raw(class_name_buf.as_ptr()).to_string() {
+            Ok(name) => name,
+            Err(_) => return,
+        };
         SetLastError(WIN32_ERROR(0));
 
         let is_disallowed_title = DISALLOWED_TITLE.contains(&client_name);
@@ -1128,7 +1138,7 @@ impl DwmrApp {
                         monitor.is_in_monitor(cursor_pos.x, cursor_pos.y)
                     }) {
                         self.selected_monitor_index = Some(index);
-                        self.refresh_bar().unwrap();
+                        let _ = self.refresh_bar();
                     }
                     return;
                 }
@@ -1140,14 +1150,22 @@ impl DwmrApp {
                         .any(|client| -> bool { client.hwnd == hwnd })
                 });
                 if is_new_clinet {
-                    if !Self::is_manageable(&hwnd).unwrap() {
-                        return;
+                    match Self::is_manageable(&hwnd) {
+                        Ok(true) => {}
+                        Ok(false) | Err(_) => return,
                     }
-                    let client = self.manage(&hwnd).unwrap();
-                    self.monitors[client.monitor].arrangemon().unwrap();
+                    match self.manage(&hwnd) {
+                        Ok(client) => {
+                            let _ = self.monitors[client.monitor].arrangemon();
+                        }
+                        Err(e) => {
+                            eprintln!("警告: manage 窗口失败 - {:?}", e);
+                            return;
+                        }
+                    }
                 }
                 self.set_focus(hwnd);
-                self.refresh_bar().unwrap();
+                let _ = self.refresh_bar();
             }
             EVENT_OBJECT_UNCLOAKED | EVENT_OBJECT_SHOW => {
                 let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
@@ -1157,18 +1175,26 @@ impl DwmrApp {
                         .any(|client| -> bool { client.hwnd == hwnd })
                 });
                 if is_new_clinet {
-                    if !Self::is_manageable(&hwnd).unwrap() {
-                        return;
+                    match Self::is_manageable(&hwnd) {
+                        Ok(true) => {}
+                        Ok(false) | Err(_) => return,
                     }
-                    let client = self.manage(&hwnd).unwrap();
-                    self.monitors[client.monitor].arrangemon().unwrap();
+                    match self.manage(&hwnd) {
+                        Ok(client) => {
+                            let _ = self.monitors[client.monitor].arrangemon();
+                        }
+                        Err(e) => {
+                            eprintln!("警告: manage 窗口失败 - {:?}", e);
+                            return;
+                        }
+                    }
                 }
                 self.set_focus(hwnd);
-                self.refresh_bar().unwrap();
+                let _ = self.refresh_bar();
             }
             EVENT_OBJECT_CLOAKED | EVENT_OBJECT_DESTROY => {
-                self.unmanage(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
+                let _ = self.unmanage(&hwnd);
+                let _ = self.refresh_bar();
             }
             EVENT_OBJECT_HIDE => {
                 if self.monitors.iter().any(|monitor| -> bool {
@@ -1179,8 +1205,8 @@ impl DwmrApp {
                 }) {
                     return;
                 }
-                self.unmanage(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
+                let _ = self.unmanage(&hwnd);
+                let _ = self.refresh_bar();
             }
             EVENT_SYSTEM_MOVESIZEEND => {
                 let is_new_clinet = !self.monitors.iter().any(|monitor| -> bool {
@@ -1190,22 +1216,30 @@ impl DwmrApp {
                         .any(|client| -> bool { client.hwnd == hwnd })
                 });
                 if is_new_clinet {
-                    if !Self::is_manageable(&hwnd).unwrap() {
-                        return;
+                    match Self::is_manageable(&hwnd) {
+                        Ok(true) => {}
+                        Ok(false) | Err(_) => return,
                     }
-                    let client = self.manage(&hwnd).unwrap();
-                    self.monitors[client.monitor].arrangemon().unwrap();
+                    match self.manage(&hwnd) {
+                        Ok(client) => {
+                            let _ = self.monitors[client.monitor].arrangemon();
+                        }
+                        Err(e) => {
+                            eprintln!("警告: manage 窗口失败 - {:?}", e);
+                            return;
+                        }
+                    }
                 }
-                self.reallocate_window(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
+                let _ = self.reallocate_window(&hwnd);
+                let _ = self.refresh_bar();
             }
             EVENT_SYSTEM_MINIMIZESTART => {
-                self.minimize(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
+                let _ = self.minimize(&hwnd);
+                let _ = self.refresh_bar();
             }
             EVENT_SYSTEM_MINIMIZEEND => {
-                self.unminimize(&hwnd).unwrap();
-                self.refresh_bar().unwrap();
+                let _ = self.unminimize(&hwnd);
+                let _ = self.refresh_bar();
             }
             _ => (),
         }
@@ -1425,6 +1459,11 @@ impl DwmrApp {
         Ok(())
     }
 
+    /// <summary>
+    /// 注册全局热键，用于捕获用户快捷键操作
+    /// 在注册前先尝试注销所有可能的热键，避免重复注册导致错误
+    /// 如果注册失败，打印警告但继续运行
+    /// </summary>
     unsafe fn grab_keys(&self) -> Result<()> {
         if self.hwnd == HWND::default() {
             return Ok(());
@@ -1432,19 +1471,32 @@ impl DwmrApp {
 
         let mut key_index = 0;
         for key in KEYS.iter() {
-            RegisterHotKey(Some(self.hwnd), key_index, key.mod_key, key.key as u32)?;
+            // 先尝试注销，忽略错误（可能之前没有注册过）
+            let _ = UnregisterHotKey(Some(self.hwnd), key_index);
+            if let Err(e) = RegisterHotKey(Some(self.hwnd), key_index, key.mod_key, key.key as u32)
+            {
+                eprintln!("警告: 注册热键 {} 失败 - {:?}，将继续运行", key_index, e);
+            }
             key_index += 1;
         }
 
         for tag_keys in TAG_KEYS.iter() {
             for key in tag_keys.iter() {
-                RegisterHotKey(Some(self.hwnd), key_index, key.mod_key, key.key as u32)?;
+                let _ = UnregisterHotKey(Some(self.hwnd), key_index);
+                if let Err(e) =
+                    RegisterHotKey(Some(self.hwnd), key_index, key.mod_key, key.key as u32)
+                {
+                    eprintln!("警告: 注册热键 {} 失败 - {:?}，将继续运行", key_index, e);
+                }
                 key_index += 1;
             }
         }
         Ok(())
     }
 
+    /// <summary>
+    /// 显示监视器回调函数，用于枚举和初始化所有监视器
+    /// </summary>
     unsafe extern "system" fn update_geom(
         hmonitor: HMONITOR,
         _: HDC,
@@ -1482,24 +1534,16 @@ impl DwmrApp {
         monitor.client_area.y += BAR_HEIGHT;
         monitor.client_area.height -= BAR_HEIGHT;
         monitor.bar.selected_tags = 1;
+        monitor.bar.master_hwnd = (*this).hwnd;
 
         let display_rect = monitor.rect.clone();
-        (*this).monitors.push(monitor);
-        (*this)
-            .monitors
-            .last_mut()
-            .as_mut()
-            .unwrap()
-            .bar
-            .master_hwnd = (*this).hwnd;
-        (*this)
-            .monitors
-            .last_mut()
-            .as_mut()
-            .unwrap()
-            .bar
-            .setup_bar(&display_rect)
-            .unwrap();
+        (*this).monitors.push(Box::new(monitor));
+
+        if let Some(monitor_ref) = (*this).monitors.last_mut() {
+            if let Err(e) = monitor_ref.bar.setup_bar(&display_rect) {
+                eprintln!("警告: 设置栏失败 - {:?}，将继续运行但状态栏可能不可用", e);
+            }
+        }
         TRUE
     }
 
@@ -1644,9 +1688,14 @@ impl DwmrApp {
         Ok(())
     }
 
+    /// <summary>
+    /// 枚举窗口回调函数，用于扫描和管理系统中的窗口
+    /// 使用安全的错误处理，避免 unwrap 导致 panic
+    /// </summary>
     unsafe extern "system" fn scan_enum(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        if !Self::is_manageable(&hwnd).unwrap() {
-            return TRUE;
+        match Self::is_manageable(&hwnd) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return TRUE,
         }
 
         let this = lparam.0 as *mut Self;
@@ -1654,7 +1703,9 @@ impl DwmrApp {
             return TRUE;
         }
 
-        (*this).manage(&hwnd).unwrap();
+        if let Err(e) = (*this).manage(&hwnd) {
+            eprintln!("警告: 管理窗口失败 - {:?}", e);
+        }
         TRUE
     }
 
@@ -1747,10 +1798,9 @@ impl DwmrApp {
             return Ok(false);
         }
 
-        if EXCLUDE_DEBUGGED_WINDOW
-            && Self::is_debugged(hwnd)? {
-                return Ok(false);
-            }
+        if EXCLUDE_DEBUGGED_WINDOW && Self::is_debugged(hwnd)? {
+            return Ok(false);
+        }
 
         let parent = GetParent(*hwnd)?;
         let parent_exist = parent != HWND::default();
@@ -1878,7 +1928,7 @@ impl DwmrApp {
             process_filename,
             parent,
             root,
-            rect: rect,
+            rect,
             bw: 0,
             is_minimized,
             is_cloaked,
@@ -1924,6 +1974,10 @@ impl DwmrApp {
         Ok(())
     }
 
+    /// <summary>
+    /// 清理资源函数，在程序退出时调用
+    /// 安全地注销所有热键和事件钩子，忽略失败的情况
+    /// </summary>
     pub unsafe fn cleanup(&mut self) -> Result<()> {
         for event_hook in self.event_hook.iter() {
             if *event_hook != HWINEVENTHOOK::default() {
@@ -1935,7 +1989,7 @@ impl DwmrApp {
         let monitors = &self.monitors;
         for monitor in monitors.iter() {
             for client in monitor.clients.iter() {
-                ShowWindow(client.hwnd, SW_RESTORE);
+                let _ = ShowWindow(client.hwnd, SW_RESTORE);
             }
         }
 
@@ -1950,7 +2004,8 @@ impl DwmrApp {
 
         let tag_keys_len = TAG_KEYS.len() * TAG_KEYS.first().unwrap().len();
         for key_index in 0..(KEYS.len() + tag_keys_len) {
-            UnregisterHotKey(Some(self.hwnd), key_index as i32)?;
+            // 忽略注销失败的错误（可能之前就没有注册成功）
+            let _ = UnregisterHotKey(Some(self.hwnd), key_index as i32);
         }
 
         self.hwnd = HWND::default();
@@ -2110,7 +2165,7 @@ impl DwmrApp {
         let is_overfloor = (current_index as i32 - offset_index) >= (length as i32);
 
         match (is_underfloor, is_overfloor) {
-            (true, false) => (length - 1),
+            (true, false) => length - 1,
             (false, true) => 0_usize,
             _ => (current_index as i32 - offset_index) as usize,
         }
